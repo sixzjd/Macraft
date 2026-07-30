@@ -28,36 +28,59 @@ def draw_icon(size=SIZE):
         fill=ACCENT_SOFT
     )
 
-    # 中心绘制一个 SF Symbol cube.fill 风格的方块
+    # 绘制 SF Symbol cube.fill 风格：三个面之间有明确缝隙
     cx, cy = size // 2, size // 2
-    s = size * 0.26  # 方块半边长
+    s = size * 0.28  # 方块尺度
+    gap = size * 0.018  # 面与面之间的间隙（关键！）
+
+    # 等距投影关键坐标
+    # 顶部顶点
+    top_pt = (cx, cy - s * 1.0)
+    # 左右肩点
+    left_shoulder = (cx - s, cy - s * 0.42)
+    right_shoulder = (cx + s, cy - s * 0.42)
+    # 中心点（三面交汇处）
+    center_pt = (cx, cy + s * 0.16)
+    # 左右底点
+    left_bottom = (cx - s, cy + s * 0.58)
+    right_bottom = (cx + s, cy + s * 0.58)
+    # 底部顶点
+    bottom_pt = (cx, cy + s * 1.16)
+
+    # 计算各面内缩（沿法线方向缩小 gap 制造分离感）
+    def shrink_polygon(pts, cx_poly, cy_poly, amount):
+        """将多边形各顶点向质心收缩 amount"""
+        result = []
+        for (px, py) in pts:
+            dx = px - cx_poly
+            dy = py - cy_poly
+            dist = math.sqrt(dx*dx + dy*dy)
+            if dist < 1:
+                result.append((px, py))
+            else:
+                result.append((px - dx/dist * amount, py - dy/dist * amount))
+        return result
 
     # 顶面 — accent 绿 #10B981
-    top_pts = [
-        (cx, cy - s * 0.95),
-        (cx + s, cy - s * 0.4),
-        (cx, cy + s * 0.15),
-        (cx - s, cy - s * 0.4),
-    ]
-    draw.polygon(top_pts, fill=ACCENT)
+    top_face = [top_pt, right_shoulder, center_pt, left_shoulder]
+    top_cx = sum(p[0] for p in top_face) / 4
+    top_cy = sum(p[1] for p in top_face) / 4
+    top_face_s = shrink_polygon(top_face, top_cx, top_cy, gap)
+    draw.polygon(top_face_s, fill=ACCENT)
 
-    # 左面 — accent 绿（稍深一点营造层次）
-    left_pts = [
-        (cx - s, cy - s * 0.4),
-        (cx, cy + s * 0.15),
-        (cx, cy + s * 1.1),
-        (cx - s, cy + s * 0.55),
-    ]
-    draw.polygon(left_pts, fill=ACCENT_DARK)
+    # 左面 — accent_dark #059669
+    left_face = [left_shoulder, center_pt, bottom_pt, left_bottom]
+    left_cx = sum(p[0] for p in left_face) / 4
+    left_cy = sum(p[1] for p in left_face) / 4
+    left_face_s = shrink_polygon(left_face, left_cx, left_cy, gap)
+    draw.polygon(left_face_s, fill=ACCENT_DARK)
 
-    # 右面 — accent 绿（与顶面相同，保持"两种绿色"）
-    right_pts = [
-        (cx + s, cy - s * 0.4),
-        (cx, cy + s * 0.15),
-        (cx, cy + s * 1.1),
-        (cx + s, cy + s * 0.55),
-    ]
-    draw.polygon(right_pts, fill=ACCENT)
+    # 右面 — accent 绿 #10B981
+    right_face = [right_shoulder, center_pt, bottom_pt, right_bottom]
+    right_cx = sum(p[0] for p in right_face) / 4
+    right_cy = sum(p[1] for p in right_face) / 4
+    right_face_s = shrink_polygon(right_face, right_cx, right_cy, gap)
+    draw.polygon(right_face_s, fill=ACCENT)
 
     return img
 
