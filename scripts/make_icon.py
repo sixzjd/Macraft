@@ -32,33 +32,52 @@ def draw_icon(size=SIZE):
     # 中心绘制一个等距立方体（Minecraft 方块）
     cx, cy = size // 2, size // 2
     s = size * 0.28  # 方块半边长
+    lw = max(3, size // 150)  # 边框线宽
 
-    # 顶面 — 浅绿 #ECFDF5
+    # 阴影（向右下偏移）
+    shadow_offset = int(size * 0.015)
+    shadow_top = [(cx + shadow_offset, cy - s * 0.9 + shadow_offset),
+                  (cx + s + shadow_offset, cy - s * 0.35 + shadow_offset),
+                  (cx + shadow_offset, cy + s * 0.2 + shadow_offset),
+                  (cx - s + shadow_offset, cy - s * 0.35 + shadow_offset)]
+    shadow_left = [(cx - s + shadow_offset, cy - s * 0.35 + shadow_offset),
+                   (cx + shadow_offset, cy + s * 0.2 + shadow_offset),
+                   (cx + shadow_offset, cy + s * 1.1 + shadow_offset),
+                   (cx - s + shadow_offset, cy + s * 0.55 + shadow_offset)]
+    shadow_right = [(cx + s + shadow_offset, cy - s * 0.35 + shadow_offset),
+                    (cx + shadow_offset, cy + s * 0.2 + shadow_offset),
+                    (cx + shadow_offset, cy + s * 1.1 + shadow_offset),
+                    (cx + s + shadow_offset, cy + s * 0.55 + shadow_offset)]
+    draw.polygon(shadow_top, fill=(0, 0, 0, 25))
+    draw.polygon(shadow_left, fill=(0, 0, 0, 25))
+    draw.polygon(shadow_right, fill=(0, 0, 0, 25))
+
+    # 顶面 — 浅绿（非纯白）#6EE7B7 emerald-300
     top_pts = [
         (cx, cy - s * 0.9),
         (cx + s, cy - s * 0.35),
         (cx, cy + s * 0.2),
         (cx - s, cy - s * 0.35),
     ]
-    draw.polygon(top_pts, fill=(236, 253, 245, 255), outline=(5, 150, 105, 255), width=max(2, size // 200))
+    draw.polygon(top_pts, fill=(110, 231, 183, 255), outline=(5, 150, 105, 255), width=lw)
 
-    # 左面 — 中绿 #059669 偏浅
+    # 左面 — 中绿 #10B981 emerald-500
     left_pts = [
         (cx - s, cy - s * 0.35),
         (cx, cy + s * 0.2),
         (cx, cy + s * 1.1),
         (cx - s, cy + s * 0.55),
     ]
-    draw.polygon(left_pts, fill=(5, 150, 105, 200), outline=(5, 150, 105, 255), width=max(2, size // 200))
+    draw.polygon(left_pts, fill=(16, 185, 129, 255), outline=(5, 150, 105, 255), width=lw)
 
-    # 右面 — 深绿 #047857
+    # 右面 — 深绿 #059669 emerald-600
     right_pts = [
         (cx + s, cy - s * 0.35),
         (cx, cy + s * 0.2),
         (cx, cy + s * 1.1),
         (cx + s, cy + s * 0.55),
     ]
-    draw.polygon(right_pts, fill=(4, 120, 87, 220), outline=(5, 150, 105, 255), width=max(2, size // 200))
+    draw.polygon(right_pts, fill=(5, 150, 105, 255), outline=(4, 120, 87, 255), width=lw)
 
     return img
 

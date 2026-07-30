@@ -102,14 +102,15 @@ struct ModpacksPage: View {
 
         if panel.runModal() == .OK, let url = panel.url {
             let fileName = url.deletingPathExtension().lastPathComponent
-            modpacks.insert(ModpackItem(
+            let newPack = ModpackItem(
                 name: fileName, author: "本地导入", version: "—",
                 mcVersion: "—", modCount: 0, downloads: "—",
                 description: "从文件导入：\(url.lastPathComponent)",
                 category: "本地", iconSymbol: "shippingbox"
-            ), at: 0)
-            importMessage = "成功导入整合包「\(fileName)」。"
-            showImportResult = true
+            )
+            modpacks.insert(newPack, at: 0)
+            // 导入后自动开始安装（创建实例）
+            startInstall(newPack)
         }
     }
 

@@ -192,12 +192,19 @@ struct MicrosoftLoginSheet: View {
     @State private var step: LoginStep = .idle
     @State private var deviceCode = ""
     @State private var playerName = ""
+    @State private var errorMessage = ""
+    @State private var copied = false
+    @State private var pollTimer: Timer?
+    @State private var internalDeviceCode = ""
+    @State private var pollInterval: TimeInterval = 5
 
     enum LoginStep {
         case idle
+        case loading
         case waitingForCode
         case authenticating
         case done
+        case error
     }
 
     var body: some View {
@@ -209,22 +216,27 @@ struct MicrosoftLoginSheet: View {
             switch step {
             case .idle:
                 idleView
+            case .loading:
+                loadingView
             case .waitingForCode:
                 codeView
             case .authenticating:
                 authenticatingView
             case .done:
                 doneView
+            case .error:
+                errorView
             }
         }
         .padding(MCTheme.Space.xxl)
-        .frame(width: 440)
+        .frame(width: 460)
         .background(MCTheme.Palette.surface)
+        .onDisappear { pollTimer?.invalidate() }
     }
 
     private var idleView: some View {
         VStack(alignment: .leading, spacing: MCTheme.Space.lg) {
-            Text("使用设备代码流登录 Xbox Live / Minecraft 正版账户。点击开始后，将打开微软验证页面。")
+            Text("使用微软设备代码流登录 Xbox Live / Minecraft 正版账户。\n点击开始后将自动打开微软验证页面。")
                 .font(MCTheme.Font.body(13))
                 .foregroundStyle(MCTheme.Palette.textSecondary)
 
@@ -238,32 +250,64 @@ struct MicrosoftLoginSheet: View {
         }
     }
 
+    private var loadingView: some View {
+        VStack(spacing: MCTheme.Space.lg) {
+            ProgressView()
+                .controlSize(.large)
+                .tint(MCTheme.Palette.accent)
+            Text("正在获取设备代码…")
+                .font(MCTheme.Font.body(13))
+                .foregroundStyle(MCTheme.Palette.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, MCTheme.Space.xl)
+    }
+
     private var codeView: some View {
         VStack(alignment: .leading, spacing: MCTheme.Space.lg) {
             Text("请在浏览器中输入以下代码：")
                 .font(MCTheme.Font.body(13))
                 .foregroundStyle(MCTheme.Palette.textSecondary)
 
-            Text(deviceCode)
-                .font(MCTheme.Font.mono(22))
-                .foregroundStyle(MCTheme.Palette.accent)
-                .frame(maxWidth: .infinity)
-                .padding(MCTheme.Space.lg)
-                .background(
-                    RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
-                        .fill(MCTheme.Palette.accentSoft)
-                )
+            HStack(spacing: MCTheme.Space.md) {
+                Text(deviceCode)
+                    .font(MCTheme.Font.mono(24))
+                    .foregroundStyle(MCTheme.Palette.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(MCTheme.Space.lg)
+                    .background(
+                        RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
+                            .fill(MCTheme.Palette.accentSoft)
+                    )
 
-            Text("已自动打开 microsoft.com/link，输入代码后点击验证。")
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(deviceCode, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(copied ? MCTheme.Palette.success : MCTheme.Palette.accent)
+                        .frame(width: 40, height: 40)
+                        .background(
+                            RoundedRectangle(cornerRadius: MCTheme.Radius.sm, style: .continuous)
+                                .fill(MCTheme.Palette.accentSoft)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("复制代码")
+            }
+
+            Text("已自动打开 microsoft.com/link，输入代码后点击“下一步”。\n登录成功后此处将自动完成验证。")
                 .font(MCTheme.Font.caption(12))
                 .foregroundStyle(MCTheme.Palette.textTertiary)
 
             HStack {
                 Spacer()
-                GhostButton(title: "取消") { dismiss() }
-                PrimaryButton(title: "我已输入代码", systemImage: "checkmark") {
-                    step = .authenticating
-                    simulateAuth()
+                GhostButton(title: "取消") {
+                    pollTimer?.invalidate()
+                    dismiss()
                 }
             }
         }
@@ -274,7 +318,7 @@ struct MicrosoftLoginSheet: View {
             ProgressView()
                 .controlSize(.large)
                 .tint(MCTheme.Palette.accent)
-            Text("正在验证身份…")
+            Text("正在获取账户信息…")
                 .font(MCTheme.Font.body(13))
                 .foregroundStyle(MCTheme.Palette.textSecondary)
         }
@@ -321,22 +365,126 @@ struct MicrosoftLoginSheet: View {
         }
     }
 
-    private func startDeviceFlow() {
-        // 生成模拟设备码（实际应调用微软 OAuth device code endpoint）
-        let chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        deviceCode = String((0..<8).map { _ in chars.randomElement()! })
-        step = .waitingForCode
-        // 打开微软设备登录页
-        if let url = URL(string: "https://www.microsoft.com/link") {
-            NSWorkspace.shared.open(url)
+    private var errorView: some View {
+        VStack(alignment: .leading, spacing: MCTheme.Space.lg) {
+            HStack(spacing: MCTheme.Space.md) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(MCTheme.Palette.warning)
+                Text("登录失败")
+                    .font(MCTheme.Font.headline(15))
+                    .foregroundStyle(MCTheme.Palette.textPrimary)
+            }
+            Text(errorMessage)
+                .font(MCTheme.Font.body(13))
+                .foregroundStyle(MCTheme.Palette.textSecondary)
+            HStack {
+                Spacer()
+                GhostButton(title: "取消") { dismiss() }
+                PrimaryButton(title: "重试", systemImage: "arrow.clockwise") {
+                    startDeviceFlow()
+                }
+            }
         }
     }
 
-    private func simulateAuth() {
-        // 模拟验证延迟（实际应轮询 token endpoint）
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            step = .done
-            playerName = "Player\(Int.random(in: 100...999))"
+    // MARK: - OAuth Device Code Flow
+    private static let clientId = "00000000402B5328"
+    private static let scope = "XboxLive.signin offline_access"
+
+    private func startDeviceFlow() {
+        step = .loading
+        errorMessage = ""
+
+        var request = URLRequest(url: URL(string: "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode")!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let body = "client_id=\(Self.clientId)&scope=\(Self.scope.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? Self.scope)"
+        request.httpBody = body.data(using: .utf8)
+
+        Task {
+            do {
+                let (data, _) = try await URLSession.shared.data(for: request)
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+                if let userCode = json?["user_code"] as? String,
+                   let devCode = json?["device_code"] as? String,
+                   let uri = json?["verification_uri"] as? String {
+                    let interval = json?["interval"] as? TimeInterval ?? 5
+
+                    await MainActor.run {
+                        self.deviceCode = userCode
+                        self.internalDeviceCode = devCode
+                        self.pollInterval = interval
+                        self.step = .waitingForCode
+                        if let url = URL(string: uri) {
+                            NSWorkspace.shared.open(url)
+                        }
+                        startPolling()
+                    }
+                } else {
+                    let errDesc = json?["error_description"] as? String ?? "未知错误"
+                    await MainActor.run {
+                        self.errorMessage = errDesc
+                        self.step = .error
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "网络请求失败：\(error.localizedDescription)"
+                    self.step = .error
+                }
+            }
+        }
+    }
+
+    private func startPolling() {
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { _ in
+            pollForToken()
+        }
+    }
+
+    private func pollForToken() {
+        var request = URLRequest(url: URL(string: "https://login.microsoftonline.com/consumers/oauth2/v2.0/token")!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let body = "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=\(Self.clientId)&device_code=\(internalDeviceCode)"
+        request.httpBody = body.data(using: .utf8)
+
+        Task {
+            do {
+                let (data, _) = try await URLSession.shared.data(for: request)
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+                if let _ = json?["access_token"] as? String {
+                    // 登录成功
+                    await MainActor.run {
+                        pollTimer?.invalidate()
+                        step = .done
+                        playerName = "Player\(Int.random(in: 100...999))"
+                    }
+                } else if let error = json?["error"] as? String {
+                    if error == "authorization_pending" {
+                        // 用户还未完成验证，继续等待
+                        return
+                    } else if error == "expired_token" {
+                        await MainActor.run {
+                            pollTimer?.invalidate()
+                            errorMessage = "代码已过期，请重新开始登录。"
+                            step = .error
+                        }
+                    } else if error == "authorization_declined" {
+                        await MainActor.run {
+                            pollTimer?.invalidate()
+                            errorMessage = "用户拒绝了授权。"
+                            step = .error
+                        }
+                    }
+                }
+            } catch {
+                // 网络错误时静默重试
+            }
         }
     }
 }

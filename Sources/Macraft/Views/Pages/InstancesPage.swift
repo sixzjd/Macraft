@@ -87,7 +87,11 @@ struct InstancesPage: View {
                         launchingInstance = instance
                         showLaunchAlert = true
                     },
-                    onConfig: { configInstance = instance }
+                    onConfig: { configInstance = instance },
+                    onDelete: {
+                        instances.removeAll { $0.id == instance.id }
+                        if selectedInstance == instance.id { selectedInstance = nil }
+                    }
                 )
             }
         }
@@ -101,7 +105,9 @@ struct InstanceCard: View {
     let onTap: () -> Void
     let onLaunch: () -> Void
     let onConfig: () -> Void
+    let onDelete: () -> Void
     @State private var hovering = false
+    @State private var showDeleteConfirm = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: MCTheme.Space.lg) {
@@ -124,6 +130,15 @@ struct InstanceCard: View {
                             .foregroundStyle(MCTheme.Palette.textTertiary)
                     }
                     Spacer()
+                    // 删除按钮
+                    Button {
+                        showDeleteConfirm = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                            .foregroundStyle(MCTheme.Palette.destructive.opacity(hovering ? 0.8 : 0))
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .buttonStyle(.plain)
@@ -158,6 +173,12 @@ struct InstanceCard: View {
         )
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.15)) { self.hovering = hovering }
+        }
+        .alert("删除实例", isPresented: $showDeleteConfirm) {
+            Button("取消", role: .cancel) { }
+            Button("删除", role: .destructive) { onDelete() }
+        } message: {
+            Text("确定要删除「\(instance.name)」吗？此操作不可撤销。")
         }
     }
 
