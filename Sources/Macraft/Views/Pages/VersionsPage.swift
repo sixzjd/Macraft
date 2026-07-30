@@ -168,6 +168,8 @@ struct VersionRow: View {
     let version: MCVersion
     let isLatestRelease: Bool
     @State private var hovering = false
+    @State private var installing = false
+    @State private var progress: Double = 0
 
     var body: some View {
         HStack(spacing: MCTheme.Space.lg) {
@@ -201,8 +203,21 @@ struct VersionRow: View {
 
             Spacer()
 
-            GhostButton(title: "安装", systemImage: "arrow.down.circle") { }
+            if installing {
+                HStack(spacing: MCTheme.Space.sm) {
+                    ProgressView(value: progress)
+                        .tint(MCTheme.Palette.accent)
+                        .frame(width: 80)
+                    Text("\(Int(progress * 100))%")
+                        .font(MCTheme.Font.mono(11))
+                        .foregroundStyle(MCTheme.Palette.accent)
+                }
+            } else {
+                GhostButton(title: "安装", systemImage: "arrow.down.circle") {
+                    startInstall()
+                }
                 .opacity(hovering ? 1 : 0)
+            }
         }
         .padding(MCTheme.Space.lg)
         .background(
@@ -216,6 +231,21 @@ struct VersionRow: View {
         )
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) { self.hovering = hovering }
+        }
+    }
+
+    private func startInstall() {
+        installing = true
+        progress = 0
+        Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { timer in
+            progress += Double.random(in: 0.04...0.15)
+            if progress >= 1.0 {
+                progress = 1.0
+                timer.invalidate()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    installing = false
+                }
+            }
         }
     }
 
