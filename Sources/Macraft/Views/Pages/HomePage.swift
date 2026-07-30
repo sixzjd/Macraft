@@ -36,8 +36,9 @@ struct PageContainer<Content: View>: View {
 // MARK: - Home Page
 struct HomePage: View {
     @Environment(MojangService.self) private var mojang
+    @Environment(GameLaunchService.self) private var launchService
     @Binding var selectedTab: NavTab
-    @State private var showLaunchAlert = false
+    @State private var showLaunchSheet = false
 
     var body: some View {
         PageContainer(title: "欢迎回来", subtitle: "准备好进入方块世界了吗？") {
@@ -47,11 +48,9 @@ struct HomePage: View {
                 quickRow
             }
         }
-        .alert("启动游戏", isPresented: $showLaunchAlert) {
-            Button("确定", role: .cancel) { }
-        } message: {
-            let ver = mojang.latestRelease.isEmpty ? "1.21.4" : mojang.latestRelease
-            Text("正在启动 Minecraft \(ver)…\n请确保已配置 Java 运行时。")
+        .sheet(isPresented: $showLaunchSheet) {
+            LaunchProgressSheet(launchService: launchService,
+                                version: mojang.latestRelease.isEmpty ? "1.21.4" : mojang.latestRelease)
         }
     }
 
@@ -69,7 +68,7 @@ struct HomePage: View {
                         .frame(maxWidth: 400, alignment: .leading)
                     HStack(spacing: MCTheme.Space.md) {
                         PrimaryButton(title: "立即启动", systemImage: "play.fill") {
-                            showLaunchAlert = true
+                            showLaunchSheet = true
                         }
                         GhostButton(title: "管理版本", systemImage: "slider.horizontal.3") {
                             selectedTab = .versions
@@ -168,6 +167,62 @@ struct QuickAction: View {
         .buttonStyle(.plain)
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) { self.hovering = hovering }
+        }
+    }
+}
+
+// MARK: - Launch Progress Sheet
+/// PCL 风格启动流程：检测 Java → 检查文件 → 启动进程
+struct LaunchProgressSheet: View {
+    let launchService: GameLaunchService
+    let version: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: MCTheme.Space.xl) {
+            switch launchService.state {
+            case .idle, .checkingJava, .checkingFiles, .launching:
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(MCTheme.Palette.accent)
+                Text(launchService.statusMessage.isEmpty ? "正在准备启动…" : launchService.statusMessage)
+                    .font(MCTheme.Font.body(13))
+                    .foregroundStyle(MCTheme.Palette.textSecondary)
+                    .multilineTextAlignment(.center)
+                GhostButton(title: "取消") { dismiss() }
+
+            case .running:
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(MCTheme.Palette.success)
+                Text(launchService.statusMessage)
+                    .font(MCTheme.Font.headline(15))
+                    .foregroundStyle(MCTheme.Palette.textPrimary)
+                PrimaryButton(title: "完成", systemImage: "checkmark") { dismiss() }
+
+            case .failed(let msg):
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 32))
+                    .foregroundStyle(MCTheme.Palette.warning)
+                Text("启动失败")
+                    .font(MCTheme.Font.headline(15))
+                    .foregroundStyle(MCTheme.Palette.textPrimary)
+                Text(msg)
+                    .font(MCTheme.Font.body(12))
+                    .foregroundStyle(MCTheme.Palette.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 320)
+                HStack {
+                    GhostButton(title: "关闭") { dismiss() }
+                }
+            }
+        }
+        .padding(MCTheme.Space.xxl)
+        .frame(width: 400, height: 240)
+        .background(MCTheme.Palette.surface)
+        .onAppear {
+            launchService.ensureDirectories()
+            launchService.launch(version: version, memoryGB: 4.0)
         }
     }
 }

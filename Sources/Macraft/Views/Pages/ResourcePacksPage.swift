@@ -83,15 +83,22 @@ struct ResourcePacksPage: View {
 
         if panel.runModal() == .OK {
             let urls = panel.urls
+            let rpDir = NSString("~/Library/Application Support/macraft/resourcepacks").expandingTildeInPath
+            try? FileManager.default.createDirectory(atPath: rpDir, withIntermediateDirectories: true)
+
             for url in urls {
+                // PCL 逻辑：复制资源包到 resourcepacks 目录
+                let dest = URL(fileURLWithPath: rpDir).appendingPathComponent(url.lastPathComponent)
+                try? FileManager.default.copyItem(at: url, to: dest)
+
                 let fileName = url.deletingPathExtension().lastPathComponent
                 packs.append(ResourcePack(
                     name: fileName, author: "本地导入", resolution: "—",
-                    description: "从文件导入：\(url.lastPathComponent)",
+                    description: "已复制到 resourcepacks 文件夹",
                     isEnabled: true, iconSymbol: "square.grid.3x3"
                 ))
             }
-            importMessage = "成功导入 \(urls.count) 个资源包。"
+            importMessage = "成功导入 \(urls.count) 个资源包到 resourcepacks 文件夹。"
             showImportResult = true
         }
     }

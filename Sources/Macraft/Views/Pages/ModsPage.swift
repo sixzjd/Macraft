@@ -122,15 +122,22 @@ struct ModsPage: View {
 
         if panel.runModal() == .OK {
             let urls = panel.urls
+            let modsDir = NSString("~/Library/Application Support/macraft/mods").expandingTildeInPath
+            try? FileManager.default.createDirectory(atPath: modsDir, withIntermediateDirectories: true)
+
             for url in urls {
+                // PCL 逻辑：复制 .jar 到 mods 目录
+                let dest = URL(fileURLWithPath: modsDir).appendingPathComponent(url.lastPathComponent)
+                try? FileManager.default.copyItem(at: url, to: dest)
+
                 let fileName = url.deletingPathExtension().lastPathComponent
                 mods.append(ModItem(
                     name: fileName, author: "本地导入", version: "—",
-                    description: "从文件导入：\(url.lastPathComponent)",
-                    category: "未分类", isEnabled: true, iconSymbol: "puzzlepiece"
+                    description: "已复制到 mods 文件夹", category: "未分类",
+                    isEnabled: true, iconSymbol: "puzzlepiece"
                 ))
             }
-            importMessage = "成功导入 \(urls.count) 个模组文件。"
+            importMessage = "成功导入 \(urls.count) 个模组到 mods 文件夹。"
             showImportResult = true
         }
     }
