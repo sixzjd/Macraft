@@ -8,12 +8,14 @@ struct SettingsPage: View {
     @State private var memoryGB = 4.0
     @State private var fullscreen = false
     @State private var showSnapshots = false
+    @State private var downloadSource = 0
 
     var body: some View {
         PageContainer(title: "设置", subtitle: "调整 Macraft 的外观与游戏运行参数") {
             VStack(spacing: MCTheme.Space.lg) {
                 appearanceSection
                 javaSection
+                downloadSection
                 gameSection
                 aboutSection
             }
@@ -69,6 +71,42 @@ struct SettingsPage: View {
                                      placeholder: "游戏文件存放位置")
                 SettingsToggleRow(label: "显示快照版本", isOn: $showSnapshots)
             }
+        }
+    }
+
+    private var downloadSection: some View {
+        Card {
+            VStack(alignment: .leading, spacing: MCTheme.Space.xl) {
+                SectionHeader(title: "下载源")
+                SettingsRow(label: "下载镜像", hint: "选择离你最近的源以加速下载") {
+                    Picker("", selection: $downloadSource) {
+                        Text("BMCLAPI（推荐）").tag(0)
+                        Text("官方源").tag(1)
+                        Text("MCBBS 镜像").tag(2)
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 200)
+                }
+                HStack(spacing: MCTheme.Space.lg) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("当前源")
+                            .font(MCTheme.Font.caption(12))
+                            .foregroundStyle(MCTheme.Palette.textTertiary)
+                        Text(downloadSourceName)
+                            .font(MCTheme.Font.mono(12))
+                            .foregroundStyle(MCTheme.Palette.accent)
+                    }
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    private var downloadSourceName: String {
+        switch downloadSource {
+        case 0: return "https://bmclapi2.bangbang93.com"
+        case 1: return "https://piston-meta.mojang.com"
+        default: return "https://download.mcbbs.net"
         }
     }
 

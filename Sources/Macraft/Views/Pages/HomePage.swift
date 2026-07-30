@@ -37,6 +37,7 @@ struct PageContainer<Content: View>: View {
 struct HomePage: View {
     @Environment(MojangService.self) private var mojang
     @Binding var selectedTab: NavTab
+    @State private var showLaunchAlert = false
 
     var body: some View {
         PageContainer(title: "欢迎回来", subtitle: "准备好进入方块世界了吗？") {
@@ -45,6 +46,12 @@ struct HomePage: View {
                 statsRow
                 quickRow
             }
+        }
+        .alert("启动游戏", isPresented: $showLaunchAlert) {
+            Button("确定", role: .cancel) { }
+        } message: {
+            let ver = mojang.latestRelease.isEmpty ? "1.21.4" : mojang.latestRelease
+            Text("正在启动 Minecraft \(ver)…\n请确保已配置 Java 运行时。")
         }
     }
 
@@ -61,7 +68,9 @@ struct HomePage: View {
                         .foregroundStyle(MCTheme.Palette.textSecondary)
                         .frame(maxWidth: 400, alignment: .leading)
                     HStack(spacing: MCTheme.Space.md) {
-                        PrimaryButton(title: "立即启动", systemImage: "play.fill") { }
+                        PrimaryButton(title: "立即启动", systemImage: "play.fill") {
+                            showLaunchAlert = true
+                        }
                         GhostButton(title: "管理版本", systemImage: "slider.horizontal.3") {
                             selectedTab = .versions
                         }

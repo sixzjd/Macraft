@@ -36,10 +36,10 @@ enum MCTheme {
         static let surfaceRaised   = Color(hex: 0xF9FAFB)
         static let surfaceHover    = Color(hex: 0xF3F4F6)
 
-        // Accent — #059669 沉稳深绿
-        static let accent          = Color(hex: 0x059669)
-        static let accentStrong    = Color(hex: 0x047857)
-        static let accentPress     = Color(hex: 0x065F46)
+        // Accent — #10B981 柔和明亮绿
+        static let accent          = Color(hex: 0x10B981)
+        static let accentStrong    = Color(hex: 0x059669)
+        static let accentPress     = Color(hex: 0x047857)
         static let accentSoft      = Color(hex: 0xECFDF5)
 
         // Text hierarchy
@@ -53,7 +53,7 @@ enum MCTheme {
         static let borderStrong    = Color(hex: 0xD1D5DB)
 
         // Status
-        static let success         = Color(hex: 0x059669)
+        static let success         = Color(hex: 0x10B981)
         static let warning         = Color(hex: 0xD97706)
         static let destructive     = Color(hex: 0xDC2626)
         static let info            = Color(hex: 0x2563EB)

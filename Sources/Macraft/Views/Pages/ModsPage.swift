@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Mod Model
 struct ModItem: Identifiable {
@@ -36,6 +38,8 @@ struct ModsPage: View {
     ]
     @State private var search = ""
     @State private var selectedCategory = "全部"
+    @State private var showImportResult = false
+    @State private var importMessage = ""
 
     private var categories: [String] {
         ["全部"] + Array(Set(mods.map(\.category))).sorted()
@@ -52,99 +56,108 @@ struct ModsPage: View {
     }
 
     var body: some View {
-        PageContainer(title: "模组管理", subtitle: "管理当前实例已安装的模组（Fabric / Forge / NeoForge）") {
+        PageContainer(title: "模组管理", subtitle: "安装、启用或禁用模组，管理加载器依赖") {
             VStack(spacing: MCTheme.Space.lg) {
                 toolbarRow
+                categoryRow
                 modList
             }
+        }
+        .alert("导入结果", isPresented: $showImportResult) {
+            Button("确定", role: .cancel) { }
+        } message: {
+            Text(importMessage)
         }
     }
 
     private var toolbarRow: some View {
-        Card(padding: MCTheme.Space.lg) {
-            HStack(spacing: MCTheme.Space.lg) {
-                HStack(spacing: MCTheme.Space.sm) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MCTheme.Palette.textTertiary)
-                    TextField("搜索模组", text: $search)
-                        .textFieldStyle(.plain)
-                        .font(MCTheme.Font.body(13))
-                }
-                .padding(.horizontal, MCTheme.Space.md)
-                .padding(.vertical, MCTheme.Space.sm)
-                .frame(width: 200)
-                .background(
-                    RoundedRectangle(cornerRadius: MCTheme.Radius.sm, style: .continuous)
-                        .fill(MCTheme.Palette.backgroundDeep)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: MCTheme.Radius.sm, style: .continuous)
-                        .strokeBorder(MCTheme.Palette.border, lineWidth: 1)
-                )
+        HStack(spacing: MCTheme.Space.md) {
+            SearchField(text: $search, placeholder: "搜索模组…")
+                .frame(maxWidth: 280)
+            Spacer()
+            GhostButton(title: "打开模组文件夹", systemImage: "folder") {
+                openModsFolder()
+            }
+            PrimaryButton(title: "安装模组", systemImage: "plus") {
+                importModFile()
+            }
+        }
+    }
 
-                Divider().frame(height: 24).overlay(MCTheme.Palette.border)
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: MCTheme.Space.sm) {
-                        ForEach(categories, id: \.self) { cat in
-                            FilterChip(label: cat,
-                                       isOn: .constant(selectedCategory == cat),
-                                       tint: MCTheme.Palette.accent)
-                                .onTapGesture {
-                                    withAnimation(.easeOut(duration: 0.12)) {
-                                        selectedCategory = cat
-                                    }
-                                }
-                        }
+    private var categoryRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: MCTheme.Space.sm) {
+                ForEach(categories, id: \.self) { cat in
+                    SelectableChip(label: cat, isSelected: selectedCategory == cat) {
+                        selectedCategory = cat
                     }
                 }
-
-                Spacer()
-
-                GhostButton(title: "安装模组", systemImage: "plus") { }
             }
         }
     }
 
     private var modList: some View {
         VStack(spacing: MCTheme.Space.sm) {
-            HStack {
-                Text("\(filtered.count) 个模组 · \(mods.filter(\.isEnabled).count) 个已启用")
-                    .font(MCTheme.Font.caption(12))
-                    .foregroundStyle(MCTheme.Palette.textTertiary)
-                Spacer()
-            }
-            ForEach(filtered) { mod in
-                ModRow(mod: mod) { index in
-                    if let i = mods.firstIndex(where: { $0.id == index }) {
-                        mods[i].isEnabled.toggle()
+            ForEach($mods) { $mod in
+                if filtered.contains(where: { $0.id == mod.id }) {
+                    ModRow(mod: $mod) {
+                        mods.removeAll { $0.id == mod.id }
                     }
                 }
             }
+            if filtered.isEmpty {
+                EmptyState(icon: "puzzlepiece", title: "没有匹配的模组",
+                           message: "尝试调整搜索关键词或分类筛选")
+                    .padding(.vertical, MCTheme.Space.xxl)
+            }
         }
+    }
+
+    private func importModFile() {
+        let panel = NSOpenPanel()
+        panel.title = "选择模组文件（.jar）"
+        panel.allowedContentTypes = [UTType(filenameExtension: "jar") ?? .data]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+
+        if panel.runModal() == .OK {
+            let urls = panel.urls
+            for url in urls {
+                let fileName = url.deletingPathExtension().lastPathComponent
+                mods.append(ModItem(
+                    name: fileName, author: "本地导入", version: "—",
+                    description: "从文件导入：\(url.lastPathComponent)",
+                    category: "未分类", isEnabled: true, iconSymbol: "puzzlepiece"
+                ))
+            }
+            importMessage = "成功导入 \(urls.count) 个模组文件。"
+            showImportResult = true
+        }
+    }
+
+    private func openModsFolder() {
+        let path = NSString("~/Library/Application Support/macraft/mods").expandingTildeInPath
+        let url = URL(fileURLWithPath: path)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(url)
     }
 }
 
 // MARK: - Mod Row
 struct ModRow: View {
-    let mod: ModItem
-    let onToggle: (UUID) -> Void
+    @Binding var mod: ModItem
+    let onDelete: () -> Void
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: MCTheme.Space.lg) {
             Image(systemName: mod.iconSymbol)
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(mod.isEnabled ? MCTheme.Palette.accent : MCTheme.Palette.textTertiary)
-                .frame(width: 36, height: 36)
+                .frame(width: 38, height: 38)
                 .background(
                     RoundedRectangle(cornerRadius: MCTheme.Radius.sm, style: .continuous)
-                        .fill(mod.isEnabled ? MCTheme.Palette.accentSoft : MCTheme.Palette.surfaceRaised)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: MCTheme.Radius.sm, style: .continuous)
-                        .strokeBorder(MCTheme.Palette.border, lineWidth: 1)
+                        .fill(mod.isEnabled ? MCTheme.Palette.accentSoft : MCTheme.Palette.backgroundDeep)
                 )
 
             VStack(alignment: .leading, spacing: 2) {
@@ -152,45 +165,42 @@ struct ModRow: View {
                     Text(mod.name)
                         .font(MCTheme.Font.headline(14))
                         .foregroundStyle(MCTheme.Palette.textPrimary)
-                    Text("v\(mod.version)")
-                        .font(MCTheme.Font.mono(11))
-                        .foregroundStyle(MCTheme.Palette.textTertiary)
+                    PillBadge(text: mod.category, color: MCTheme.Palette.textSecondary)
                 }
                 Text(mod.description)
                     .font(MCTheme.Font.caption(12))
-                    .foregroundStyle(MCTheme.Palette.textSecondary)
+                    .foregroundStyle(MCTheme.Palette.textTertiary)
                     .lineLimit(1)
             }
 
             Spacer()
 
-            PillBadge(text: mod.category, color: MCTheme.Palette.info)
-
-            Text(mod.author)
-                .font(MCTheme.Font.caption(11))
+            Text("v\(mod.version)")
+                .font(MCTheme.Font.mono(11))
                 .foregroundStyle(MCTheme.Palette.textTertiary)
-                .frame(width: 80, alignment: .trailing)
 
-            Toggle("", isOn: Binding(
-                get: { mod.isEnabled },
-                set: { _ in onToggle(mod.id) }
-            ))
-            .toggleStyle(.switch)
-            .tint(MCTheme.Palette.accent)
-            .labelsHidden()
-            .controlSize(.small)
+            Toggle("", isOn: $mod.isEnabled)
+                .toggleStyle(.switch)
+                .tint(MCTheme.Palette.accent)
+                .labelsHidden()
+
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.system(size: 13))
+                    .foregroundStyle(MCTheme.Palette.destructive.opacity(hovering ? 1 : 0.5))
+            }
+            .buttonStyle(.plain)
         }
         .padding(MCTheme.Space.lg)
         .background(
             RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
-                .fill(hovering ? MCTheme.Palette.surface : MCTheme.Palette.surfaceRaised)
-                .shadow(color: hovering ? MCTheme.Palette.shadowSoft : .clear, radius: 6, y: 2)
+                .fill(MCTheme.Palette.surface)
+                .shadow(color: MCTheme.Palette.shadowSoft, radius: 6, y: 2)
         )
         .overlay(
             RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
                 .strokeBorder(MCTheme.Palette.border, lineWidth: 1)
         )
-        .opacity(mod.isEnabled ? 1 : 0.6)
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) { self.hovering = hovering }
         }

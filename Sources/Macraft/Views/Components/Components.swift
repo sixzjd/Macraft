@@ -204,3 +204,64 @@ struct EmptyState: View {
         .padding(.vertical, MCTheme.Space.xxxl)
     }
 }
+
+// MARK: - Search Field
+struct SearchField: View {
+    @Binding var text: String
+    var placeholder: String = "搜索…"
+
+    var body: some View {
+        HStack(spacing: MCTheme.Space.sm) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13))
+                .foregroundStyle(MCTheme.Palette.textTertiary)
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .font(MCTheme.Font.body(13))
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(MCTheme.Palette.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, MCTheme.Space.md)
+        .padding(.vertical, MCTheme.Space.sm + 2)
+        .background(
+            RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
+                .fill(MCTheme.Palette.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
+                .strokeBorder(MCTheme.Palette.border, lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - Selectable Filter Chip
+struct SelectableChip: View {
+    let label: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(MCTheme.Font.caption(12).weight(isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? MCTheme.Palette.textOnAccent : MCTheme.Palette.textSecondary)
+                .padding(.horizontal, MCTheme.Space.md)
+                .padding(.vertical, MCTheme.Space.xs + 2)
+                .background(
+                    Capsule().fill(isSelected ? MCTheme.Palette.accent : MCTheme.Palette.surfaceRaised)
+                )
+                .overlay(
+                    Capsule().strokeBorder(isSelected ? Color.clear : MCTheme.Palette.border, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+}

@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Resource Pack Model
 struct ResourcePack: Identifiable {
@@ -30,6 +32,8 @@ struct ResourcePacksPage: View {
                      description: "为生物添加全新动画效果", isEnabled: true,
                      iconSymbol: "figure.walk"),
     ]
+    @State private var showImportResult = false
+    @State private var importMessage = ""
 
     var body: some View {
         PageContainer(title: "资源包管理", subtitle: "材质包、光影、字体与音效包的管理") {
@@ -37,6 +41,11 @@ struct ResourcePacksPage: View {
                 toolbarRow
                 packList
             }
+        }
+        .alert("导入结果", isPresented: $showImportResult) {
+            Button("确定", role: .cancel) { }
+        } message: {
+            Text(importMessage)
         }
     }
 
@@ -46,28 +55,59 @@ struct ResourcePacksPage: View {
                 .font(MCTheme.Font.caption(12))
                 .foregroundStyle(MCTheme.Palette.textTertiary)
             Spacer()
-            GhostButton(title: "打开文件夹", systemImage: "folder") { }
-            PrimaryButton(title: "导入资源包", systemImage: "plus") { }
+            GhostButton(title: "打开文件夹", systemImage: "folder") {
+                openResourcePackFolder()
+            }
+            PrimaryButton(title: "导入资源包", systemImage: "plus") {
+                importResourcePack()
+            }
         }
     }
 
     private var packList: some View {
         VStack(spacing: MCTheme.Space.sm) {
-            ForEach(packs) { pack in
-                ResourcePackRow(pack: pack) { id in
-                    if let i = packs.firstIndex(where: { $0.id == id }) {
-                        packs[i].isEnabled.toggle()
-                    }
+            ForEach($packs) { $pack in
+                ResourcePackRow(pack: $pack) {
+                    packs.removeAll { $0.id == pack.id }
                 }
             }
         }
+    }
+
+    private func importResourcePack() {
+        let panel = NSOpenPanel()
+        panel.title = "选择资源包文件（.zip）"
+        panel.allowedContentTypes = [UTType.zip, UTType(filenameExtension: "mcpack") ?? .data]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+
+        if panel.runModal() == .OK {
+            let urls = panel.urls
+            for url in urls {
+                let fileName = url.deletingPathExtension().lastPathComponent
+                packs.append(ResourcePack(
+                    name: fileName, author: "本地导入", resolution: "—",
+                    description: "从文件导入：\(url.lastPathComponent)",
+                    isEnabled: true, iconSymbol: "square.grid.3x3"
+                ))
+            }
+            importMessage = "成功导入 \(urls.count) 个资源包。"
+            showImportResult = true
+        }
+    }
+
+    private func openResourcePackFolder() {
+        let path = NSString("~/Library/Application Support/macraft/resourcepacks").expandingTildeInPath
+        let url = URL(fileURLWithPath: path)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(url)
     }
 }
 
 // MARK: - Resource Pack Row
 struct ResourcePackRow: View {
-    let pack: ResourcePack
-    let onToggle: (UUID) -> Void
+    @Binding var pack: ResourcePack
+    let onDelete: () -> Void
     @State private var hovering = false
 
     var body: some View {
@@ -75,14 +115,10 @@ struct ResourcePackRow: View {
             Image(systemName: pack.iconSymbol)
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(pack.isEnabled ? MCTheme.Palette.accent : MCTheme.Palette.textTertiary)
-                .frame(width: 44, height: 44)
+                .frame(width: 38, height: 38)
                 .background(
-                    RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
-                        .fill(pack.isEnabled ? MCTheme.Palette.accentSoft : MCTheme.Palette.surfaceRaised)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
-                        .strokeBorder(MCTheme.Palette.border, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: MCTheme.Radius.sm, style: .continuous)
+                        .fill(pack.isEnabled ? MCTheme.Palette.accentSoft : MCTheme.Palette.backgroundDeep)
                 )
 
             VStack(alignment: .leading, spacing: 2) {
@@ -91,12 +127,12 @@ struct ResourcePackRow: View {
                         .font(MCTheme.Font.headline(14))
                         .foregroundStyle(MCTheme.Palette.textPrimary)
                     if pack.resolution != "—" {
-                        PillBadge(text: pack.resolution, color: MCTheme.Palette.textSecondary)
+                        PillBadge(text: pack.resolution, color: MCTheme.Palette.info)
                     }
                 }
                 Text(pack.description)
                     .font(MCTheme.Font.caption(12))
-                    .foregroundStyle(MCTheme.Palette.textSecondary)
+                    .foregroundStyle(MCTheme.Palette.textTertiary)
                     .lineLimit(1)
             }
 
@@ -106,26 +142,28 @@ struct ResourcePackRow: View {
                 .font(MCTheme.Font.caption(11))
                 .foregroundStyle(MCTheme.Palette.textTertiary)
 
-            Toggle("", isOn: Binding(
-                get: { pack.isEnabled },
-                set: { _ in onToggle(pack.id) }
-            ))
-            .toggleStyle(.switch)
-            .tint(MCTheme.Palette.accent)
-            .labelsHidden()
-            .controlSize(.small)
+            Toggle("", isOn: $pack.isEnabled)
+                .toggleStyle(.switch)
+                .tint(MCTheme.Palette.accent)
+                .labelsHidden()
+
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.system(size: 13))
+                    .foregroundStyle(MCTheme.Palette.destructive.opacity(hovering ? 1 : 0.5))
+            }
+            .buttonStyle(.plain)
         }
         .padding(MCTheme.Space.lg)
         .background(
             RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
-                .fill(hovering ? MCTheme.Palette.surface : MCTheme.Palette.surfaceRaised)
-                .shadow(color: hovering ? MCTheme.Palette.shadowSoft : .clear, radius: 6, y: 2)
+                .fill(MCTheme.Palette.surface)
+                .shadow(color: MCTheme.Palette.shadowSoft, radius: 6, y: 2)
         )
         .overlay(
             RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
                 .strokeBorder(MCTheme.Palette.border, lineWidth: 1)
         )
-        .opacity(pack.isEnabled ? 1 : 0.6)
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) { self.hovering = hovering }
         }
