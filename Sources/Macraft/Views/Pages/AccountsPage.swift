@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WebKit
 
 // MARK: - Account model
 struct GameAccount: Identifiable {
@@ -186,26 +187,27 @@ struct AddOfflineAccountSheet: View {
 }
 
 // MARK: - Microsoft Login Sheet
+/// 按照 PCL2 的授权代码流实现：login.live.com OAuth → Xbox Live → XSTS → Minecraft
 struct MicrosoftLoginSheet: View {
     let onSuccess: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var step: LoginStep = .idle
-    @State private var deviceCode = ""
-    @State private var playerName = ""
     @State private var errorMessage = ""
-    @State private var copied = false
-    @State private var pollTimer: Timer?
-    @State private var internalDeviceCode = ""
-    @State private var pollInterval: TimeInterval = 5
+    @State private var statusText = ""
 
     enum LoginStep {
         case idle
-        case loading
-        case waitingForCode
-        case authenticating
+        case webView      // 显示内嵌浏览器登录
+        case exchanging   // 正在兑换 token
         case done
         case error
     }
+
+    // PCL2 使用的 Client ID 和端点
+    private static let clientId = "00000000402b5328"
+    private static let authUrl = "https://login.live.com/oauth20_authorize.srf?client_id=00000000402b5328&response_type=code&redirect_uri=https://login.live.com/oauth20_desktop.srf&response_mode=query&scope=service::user.auth.xboxlive.com::MBI_SSL"
+    private static let tokenUrl = "https://login.live.com/oauth20_token.srf"
+    private static let redirectUri = "https://login.live.com/oauth20_desktop.srf"
 
     var body: some View {
         VStack(alignment: .leading, spacing: MCTheme.Space.xl) {
@@ -216,12 +218,10 @@ struct MicrosoftLoginSheet: View {
             switch step {
             case .idle:
                 idleView
-            case .loading:
-                loadingView
-            case .waitingForCode:
-                codeView
-            case .authenticating:
-                authenticatingView
+            case .webView:
+                webViewLogin
+            case .exchanging:
+                exchangingView
             case .done:
                 doneView
             case .error:
@@ -229,101 +229,61 @@ struct MicrosoftLoginSheet: View {
             }
         }
         .padding(MCTheme.Space.xxl)
-        .frame(width: 460)
+        .frame(width: step == .webView ? 520 : 460,
+               height: step == .webView ? 560 : nil)
         .background(MCTheme.Palette.surface)
-        .onDisappear { pollTimer?.invalidate() }
     }
 
     private var idleView: some View {
         VStack(alignment: .leading, spacing: MCTheme.Space.lg) {
-            Text("使用微软设备代码流登录 Xbox Live / Minecraft 正版账户。\n点击开始后将自动打开微软验证页面。")
+            Text("点击开始后将在应用内打开微软登录页面。\n登录你的 Xbox Live / Minecraft 正版账户即可。")
                 .font(MCTheme.Font.body(13))
                 .foregroundStyle(MCTheme.Palette.textSecondary)
 
             HStack {
                 Spacer()
                 GhostButton(title: "取消") { dismiss() }
-                PrimaryButton(title: "开始登录", systemImage: "arrow.right") {
-                    startDeviceFlow()
+                PrimaryButton(title: "开始登录", systemImage: "logo.windows") {
+                    step = .webView
                 }
             }
         }
     }
 
-    private var loadingView: some View {
-        VStack(spacing: MCTheme.Space.lg) {
-            ProgressView()
-                .controlSize(.large)
-                .tint(MCTheme.Palette.accent)
-            Text("正在获取设备代码…")
-                .font(MCTheme.Font.body(13))
-                .foregroundStyle(MCTheme.Palette.textSecondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, MCTheme.Space.xl)
-    }
-
-    private var codeView: some View {
-        VStack(alignment: .leading, spacing: MCTheme.Space.lg) {
-            Text("请在浏览器中输入以下代码：")
-                .font(MCTheme.Font.body(13))
-                .foregroundStyle(MCTheme.Palette.textSecondary)
-
-            HStack(spacing: MCTheme.Space.md) {
-                Text(deviceCode)
-                    .font(MCTheme.Font.mono(24))
-                    .foregroundStyle(MCTheme.Palette.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(MCTheme.Space.lg)
-                    .background(
-                        RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
-                            .fill(MCTheme.Palette.accentSoft)
-                    )
-
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(deviceCode, forType: .string)
-                    copied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
-                } label: {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(copied ? MCTheme.Palette.success : MCTheme.Palette.accent)
-                        .frame(width: 40, height: 40)
-                        .background(
-                            RoundedRectangle(cornerRadius: MCTheme.Radius.sm, style: .continuous)
-                                .fill(MCTheme.Palette.accentSoft)
-                        )
-                }
-                .buttonStyle(.plain)
-                .help("复制代码")
+    private var webViewLogin: some View {
+        VStack(spacing: MCTheme.Space.md) {
+            OAuthWebView(authUrl: Self.authUrl, redirectUri: Self.redirectUri) { code in
+                // 获取到授权码，开始兑换 token
+                step = .exchanging
+                statusText = "正在获取 Xbox Live 令牌…"
+                exchangeCodeForTokens(code: code)
+            } onCancel: {
+                step = .idle
             }
+            .frame(height: 420)
+            .clipShape(RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
+                    .strokeBorder(MCTheme.Palette.border, lineWidth: 1)
+            )
 
-            Text("已自动打开 microsoft.com/link，输入代码后点击“下一步”。\n登录成功后此处将自动完成验证。")
+            Text("在上方窗口中登录你的微软账户")
                 .font(MCTheme.Font.caption(12))
                 .foregroundStyle(MCTheme.Palette.textTertiary)
-
-            HStack {
-                Spacer()
-                GhostButton(title: "取消") {
-                    pollTimer?.invalidate()
-                    dismiss()
-                }
-            }
         }
     }
 
-    private var authenticatingView: some View {
+    private var exchangingView: some View {
         VStack(spacing: MCTheme.Space.lg) {
             ProgressView()
                 .controlSize(.large)
                 .tint(MCTheme.Palette.accent)
-            Text("正在获取账户信息…")
+            Text(statusText)
                 .font(MCTheme.Font.body(13))
                 .foregroundStyle(MCTheme.Palette.textSecondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, MCTheme.Space.xl)
+        .padding(.vertical, MCTheme.Space.xxl)
     }
 
     private var doneView: some View {
@@ -336,34 +296,19 @@ struct MicrosoftLoginSheet: View {
                     .font(MCTheme.Font.headline(15))
                     .foregroundStyle(MCTheme.Palette.textPrimary)
             }
-
-            VStack(alignment: .leading, spacing: MCTheme.Space.sm) {
-                Text("游戏昵称")
-                    .font(MCTheme.Font.callout(13))
-                    .foregroundStyle(MCTheme.Palette.textSecondary)
-                TextField("输入你的游戏内昵称", text: $playerName)
-                    .textFieldStyle(.plain)
-                    .font(MCTheme.Font.body(14))
-                    .padding(MCTheme.Space.md)
-                    .background(
-                        RoundedRectangle(cornerRadius: MCTheme.Radius.sm, style: .continuous)
-                            .fill(MCTheme.Palette.backgroundDeep)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MCTheme.Radius.sm, style: .continuous)
-                            .strokeBorder(MCTheme.Palette.borderStrong, lineWidth: 1)
-                    )
-            }
-
+            Text("已成功获取 Minecraft 正版账户授权。")
+                .font(MCTheme.Font.body(13))
+                .foregroundStyle(MCTheme.Palette.textSecondary)
             HStack {
                 Spacer()
                 PrimaryButton(title: "完成", systemImage: "checkmark") {
-                    let name = playerName.trimmingCharacters(in: .whitespaces)
-                    onSuccess(name.isEmpty ? "Player" : name)
+                    onSuccess(playerName.isEmpty ? "Player" : playerName)
                 }
             }
         }
     }
+
+    @State private var playerName = ""
 
     private var errorView: some View {
         VStack(alignment: .leading, spacing: MCTheme.Space.lg) {
@@ -376,115 +321,186 @@ struct MicrosoftLoginSheet: View {
                     .foregroundStyle(MCTheme.Palette.textPrimary)
             }
             Text(errorMessage)
-                .font(MCTheme.Font.body(13))
+                .font(MCTheme.Font.body(12))
                 .foregroundStyle(MCTheme.Palette.textSecondary)
+                .lineLimit(4)
             HStack {
                 Spacer()
                 GhostButton(title: "取消") { dismiss() }
                 PrimaryButton(title: "重试", systemImage: "arrow.clockwise") {
-                    startDeviceFlow()
+                    step = .webView
                 }
             }
         }
     }
 
-    // MARK: - OAuth Device Code Flow
-    private static let clientId = "00000000402B5328"
-    private static let scope = "XboxLive.signin offline_access"
-
-    private func startDeviceFlow() {
-        step = .loading
-        errorMessage = ""
-
-        var request = URLRequest(url: URL(string: "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode")!)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        let body = "client_id=\(Self.clientId)&scope=\(Self.scope.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? Self.scope)"
-        request.httpBody = body.data(using: .utf8)
-
+    // MARK: - Token Exchange Chain (PCL2 流程)
+    private func exchangeCodeForTokens(code: String) {
         Task {
             do {
-                let (data, _) = try await URLSession.shared.data(for: request)
-                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                // Step 1: 授权码 → Microsoft Token
+                let msToken = try await getMicrosoftToken(code: code)
+                await MainActor.run { statusText = "正在获取 Xbox Live 令牌…" }
 
-                if let userCode = json?["user_code"] as? String,
-                   let devCode = json?["device_code"] as? String,
-                   let uri = json?["verification_uri"] as? String {
-                    let interval = json?["interval"] as? TimeInterval ?? 5
+                // Step 2: Microsoft Token → Xbox Live Token
+                let (xblToken, userHash) = try await getXboxLiveToken(msToken: msToken)
+                await MainActor.run { statusText = "正在获取 XSTS 令牌…" }
 
-                    await MainActor.run {
-                        self.deviceCode = userCode
-                        self.internalDeviceCode = devCode
-                        self.pollInterval = interval
-                        self.step = .waitingForCode
-                        if let url = URL(string: uri) {
-                            NSWorkspace.shared.open(url)
-                        }
-                        startPolling()
-                    }
-                } else {
-                    let errDesc = json?["error_description"] as? String ?? "未知错误"
-                    await MainActor.run {
-                        self.errorMessage = errDesc
-                        self.step = .error
-                    }
+                // Step 3: Xbox Live → XSTS Token
+                let xstsToken = try await getXstsToken(xblToken: xblToken)
+                await MainActor.run { statusText = "正在获取 Minecraft 令牌…" }
+
+                // Step 4: XSTS → Minecraft Token
+                let mcToken = try await getMinecraftToken(userHash: userHash, xstsToken: xstsToken)
+                await MainActor.run { statusText = "正在获取游戏档案…" }
+
+                // Step 5: 获取 Minecraft 档案（用户名）
+                let name = try await getMinecraftProfile(mcToken: mcToken)
+
+                await MainActor.run {
+                    playerName = name
+                    step = .done
                 }
             } catch {
                 await MainActor.run {
-                    self.errorMessage = "网络请求失败：\(error.localizedDescription)"
-                    self.step = .error
+                    errorMessage = error.localizedDescription
+                    step = .error
                 }
             }
         }
     }
 
-    private func startPolling() {
-        pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { _ in
-            pollForToken()
+    private func getMicrosoftToken(code: String) async throws -> String {
+        var req = URLRequest(url: URL(string: Self.tokenUrl)!)
+        req.httpMethod = "POST"
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        req.httpBody = "client_id=\(Self.clientId)&code=\(code)&grant_type=authorization_code&redirect_uri=\(Self.redirectUri.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")&scope=service::user.auth.xboxlive.com::MBI_SSL".data(using: .utf8)
+
+        let (data, _) = try await URLSession.shared.data(for: req)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let token = json["access_token"] as? String else {
+            let desc = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error_description"] as? String ?? "无法获取 Microsoft 令牌"
+            throw NSError(domain: "OAuth", code: 1, userInfo: [NSLocalizedDescriptionKey: desc])
         }
+        return token
     }
 
-    private func pollForToken() {
-        var request = URLRequest(url: URL(string: "https://login.microsoftonline.com/consumers/oauth2/v2.0/token")!)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        let body = "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=\(Self.clientId)&device_code=\(internalDeviceCode)"
-        request.httpBody = body.data(using: .utf8)
+    private func getXboxLiveToken(msToken: String) async throws -> (String, String) {
+        var req = URLRequest(url: URL(string: "https://user.auth.xboxlive.com/user/authenticate")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "Properties": [
+                "AuthMethod": "RPS",
+                "SiteName": "user.auth.xboxlive.com",
+                "RpsTicket": "d=\(msToken)"
+            ],
+            "RelyingParty": "http://auth.xboxlive.com",
+            "TokenType": "JWT"
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        Task {
-            do {
-                let (data, _) = try await URLSession.shared.data(for: request)
-                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let (data, _) = try await URLSession.shared.data(for: req)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let token = json["Token"] as? String,
+              let displayClaims = json["DisplayClaims"] as? [String: Any],
+              let xui = displayClaims["xui"] as? [[String: Any]],
+              let uhs = xui.first?["uhs"] as? String else {
+            throw NSError(domain: "OAuth", code: 2, userInfo: [NSLocalizedDescriptionKey: "无法获取 Xbox Live 令牌"])
+        }
+        return (token, uhs)
+    }
 
-                if let _ = json?["access_token"] as? String {
-                    // 登录成功
-                    await MainActor.run {
-                        pollTimer?.invalidate()
-                        step = .done
-                        playerName = "Player\(Int.random(in: 100...999))"
-                    }
-                } else if let error = json?["error"] as? String {
-                    if error == "authorization_pending" {
-                        // 用户还未完成验证，继续等待
-                        return
-                    } else if error == "expired_token" {
-                        await MainActor.run {
-                            pollTimer?.invalidate()
-                            errorMessage = "代码已过期，请重新开始登录。"
-                            step = .error
-                        }
-                    } else if error == "authorization_declined" {
-                        await MainActor.run {
-                            pollTimer?.invalidate()
-                            errorMessage = "用户拒绝了授权。"
-                            step = .error
-                        }
-                    }
+    private func getXstsToken(xblToken: String) async throws -> String {
+        var req = URLRequest(url: URL(string: "https://xsts.auth.xboxlive.com/xsts/authorize")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "Properties": [
+                "SandboxId": "RETAIL",
+                "UserTokens": [xblToken]
+            ],
+            "RelyingParty": "rp://api.minecraftservices.com/",
+            "TokenType": "JWT"
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, _) = try await URLSession.shared.data(for: req)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let token = json["Token"] as? String else {
+            throw NSError(domain: "OAuth", code: 3, userInfo: [NSLocalizedDescriptionKey: "无法获取 XSTS 令牌"])
+        }
+        return token
+    }
+
+    private func getMinecraftToken(userHash: String, xstsToken: String) async throws -> String {
+        var req = URLRequest(url: URL(string: "https://api.minecraftservices.com/authentication/login_with_xbox")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["identityToken": "XBL3.0 x=\(userHash);\(xstsToken)"]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, _) = try await URLSession.shared.data(for: req)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let token = json["access_token"] as? String else {
+            throw NSError(domain: "OAuth", code: 4, userInfo: [NSLocalizedDescriptionKey: "无法获取 Minecraft 令牌"])
+        }
+        return token
+    }
+
+    private func getMinecraftProfile(mcToken: String) async throws -> String {
+        var req = URLRequest(url: URL(string: "https://api.minecraftservices.com/minecraft/profile")!)
+        req.setValue("Bearer \(mcToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, _) = try await URLSession.shared.data(for: req)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let name = json["name"] as? String else {
+            throw NSError(domain: "OAuth", code: 5, userInfo: [NSLocalizedDescriptionKey: "该账户未拥有 Minecraft Java 版"])
+        }
+        return name
+    }
+}
+
+// MARK: - OAuth WebView (内嵌浏览器登录)
+struct OAuthWebView: NSViewRepresentable {
+    let authUrl: String
+    let redirectUri: String
+    let onCode: (String) -> Void
+    let onCancel: () -> Void
+
+    func makeNSView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()  // 不保存登录状态
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        if let url = URL(string: authUrl) {
+            webView.load(URLRequest(url: url))
+        }
+        return webView
+    }
+
+    func updateNSView(_ nsView: WKWebView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, WKNavigationDelegate {
+        let parent: OAuthWebView
+        init(_ parent: OAuthWebView) { self.parent = parent }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if let url = navigationAction.request.url,
+               url.absoluteString.hasPrefix(parent.redirectUri) {
+                // 拦截重定向，提取 code 参数
+                let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                if let code = components?.queryItems?.first(where: { $0.name == "code" })?.value {
+                    decisionHandler(.cancel)
+                    parent.onCode(code)
+                    return
                 }
-            } catch {
-                // 网络错误时静默重试
             }
+            decisionHandler(.allow)
         }
     }
 }
