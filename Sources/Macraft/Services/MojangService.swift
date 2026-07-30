@@ -51,20 +51,31 @@ final class MojangService {
     @MainActor
     func loadManifest() async {
         state = .loading
-        do {
-            let (data, response) = try await URLSession.shared.data(from: downloadSource.manifestURL)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                state = .failed("服务器返回了异常状态码")
+        // 尝试多个源：当前选择 → 官方源
+        let fallbackURL = URL(string: "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")!
+        let urls: [URL] = downloadSource.manifestURL == fallbackURL
+            ? [fallbackURL]
+            : [downloadSource.manifestURL, fallbackURL]
+
+        var lastError: Error?
+        for url in urls {
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
+                    continue
+                }
+                let manifest = try JSONDecoder().decode(VersionManifest.self, from: data)
+                self.allVersions = manifest.versions
+                self.latestRelease = manifest.latest.release
+                self.latestSnapshot = manifest.latest.snapshot
+                self.state = .loaded
                 return
+            } catch {
+                lastError = error
+                continue
             }
-            let manifest = try JSONDecoder().decode(VersionManifest.self, from: data)
-            self.allVersions = manifest.versions
-            self.latestRelease = manifest.latest.release
-            self.latestSnapshot = manifest.latest.snapshot
-            self.state = .loaded
-        } catch {
-            self.state = .failed(error.localizedDescription)
         }
+        self.state = .failed(lastError?.localizedDescription ?? "所有下载源均无法连接")
     }
 
     /// 按搜索词与类型过滤

@@ -7,12 +7,14 @@ struct MacraftApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var mojang = MojangService()
     @State private var launchService = GameLaunchService()
+    @State private var installer = VersionInstaller()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environment(mojang)
                 .environment(launchService)
+                .environment(installer)
                 .frame(minWidth: 1000, minHeight: 660)
         }
         .windowStyle(.hiddenTitleBar)

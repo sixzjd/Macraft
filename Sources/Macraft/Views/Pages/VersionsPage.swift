@@ -3,6 +3,7 @@ import SwiftUI
 // MARK: - Versions Page
 struct VersionsPage: View {
     @Environment(MojangService.self) private var mojang
+    @Environment(VersionInstaller.self) private var installer
 
     @State private var search = ""
     @State private var showReleases = true
@@ -167,9 +168,14 @@ struct FilterChip: View {
 struct VersionRow: View {
     let version: MCVersion
     let isLatestRelease: Bool
+    @Environment(VersionInstaller.self) private var installer
     @State private var hovering = false
-    @State private var installing = false
-    @State private var progress: Double = 0
+
+    private var isInstalled: Bool { installer.isInstalled(version.id) }
+    private var isInstalling: Bool {
+        if case .downloading = installer.state { return true }
+        return false
+    }
 
     var body: some View {
         HStack(spacing: MCTheme.Space.lg) {
@@ -195,6 +201,9 @@ struct VersionRow: View {
                     if isLatestRelease {
                         PillBadge(text: "最新正式版", color: MCTheme.Palette.success)
                     }
+                    if isInstalled {
+                        PillBadge(text: "已安装", color: MCTheme.Palette.accent)
+                    }
                 }
                 Text("\(version.type.displayName) · 发布于 \(version.formattedDate)")
                     .font(MCTheme.Font.caption(12))
@@ -203,18 +212,18 @@ struct VersionRow: View {
 
             Spacer()
 
-            if installing {
+            if isInstalling {
                 HStack(spacing: MCTheme.Space.sm) {
-                    ProgressView(value: progress)
+                    ProgressView(value: installer.progress)
                         .tint(MCTheme.Palette.accent)
                         .frame(width: 80)
-                    Text("\(Int(progress * 100))%")
+                    Text("\(Int(installer.progress * 100))%")
                         .font(MCTheme.Font.mono(11))
                         .foregroundStyle(MCTheme.Palette.accent)
                 }
-            } else {
+            } else if !isInstalled {
                 GhostButton(title: "安装", systemImage: "arrow.down.circle") {
-                    startInstall()
+                    Task { await installer.install(version: version) }
                 }
                 .opacity(hovering ? 1 : 0)
             }
@@ -231,21 +240,6 @@ struct VersionRow: View {
         )
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) { self.hovering = hovering }
-        }
-    }
-
-    private func startInstall() {
-        installing = true
-        progress = 0
-        Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { timer in
-            progress += Double.random(in: 0.04...0.15)
-            if progress >= 1.0 {
-                progress = 1.0
-                timer.invalidate()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                    installing = false
-                }
-            }
         }
     }
 

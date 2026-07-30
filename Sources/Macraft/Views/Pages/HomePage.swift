@@ -37,8 +37,13 @@ struct PageContainer<Content: View>: View {
 struct HomePage: View {
     @Environment(MojangService.self) private var mojang
     @Environment(GameLaunchService.self) private var launchService
+    @Environment(VersionInstaller.self) private var installer
     @Binding var selectedTab: NavTab
     @State private var showLaunchSheet = false
+    @State private var selectedVersion: String = ""
+
+    /// 已安装版本列表
+    private var installedVersions: [String] { installer.installedVersions }
 
     var body: some View {
         PageContainer(title: "欢迎回来", subtitle: "准备好进入方块世界了吗？") {
@@ -50,7 +55,12 @@ struct HomePage: View {
         }
         .sheet(isPresented: $showLaunchSheet) {
             LaunchProgressSheet(launchService: launchService,
-                                version: mojang.latestRelease.isEmpty ? "1.21.4" : mojang.latestRelease)
+                                version: selectedVersion)
+        }
+        .onAppear {
+            if selectedVersion.isEmpty {
+                selectedVersion = installedVersions.first ?? mojang.latestRelease
+            }
         }
     }
 
@@ -58,17 +68,33 @@ struct HomePage: View {
         Card(padding: MCTheme.Space.xxl) {
             HStack(spacing: MCTheme.Space.xxl) {
                 VStack(alignment: .leading, spacing: MCTheme.Space.md) {
-                    PillBadge(text: mojang.latestRelease.isEmpty ? "加载中" : "最新 \(mojang.latestRelease)")
+                    PillBadge(text: installedVersions.isEmpty ? "未安装版本" : "已安装 \(installedVersions.count) 个版本")
                     Text("启动 Minecraft")
                         .font(MCTheme.Font.display(26))
                         .foregroundStyle(MCTheme.Palette.textPrimary)
-                    Text("选择版本，一键进入游戏。支持正式版、快照与历史版本。")
-                        .font(MCTheme.Font.body(14))
-                        .foregroundStyle(MCTheme.Palette.textSecondary)
-                        .frame(maxWidth: 400, alignment: .leading)
+
+                    // 版本选择器
+                    if !installedVersions.isEmpty {
+                        Picker("版本", selection: $selectedVersion) {
+                            ForEach(installedVersions, id: \.self) { v in
+                                Text(v).tag(v)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 200)
+                    } else {
+                        Text("请先在「版本管理」中安装一个 Minecraft 版本")
+                            .font(MCTheme.Font.body(13))
+                            .foregroundStyle(MCTheme.Palette.warning)
+                    }
+
                     HStack(spacing: MCTheme.Space.md) {
                         PrimaryButton(title: "立即启动", systemImage: "play.fill") {
-                            showLaunchSheet = true
+                            if !installedVersions.isEmpty {
+                                showLaunchSheet = true
+                            } else {
+                                selectedTab = .versions
+                            }
                         }
                         GhostButton(title: "管理版本", systemImage: "slider.horizontal.3") {
                             selectedTab = .versions
@@ -102,7 +128,7 @@ struct HomePage: View {
                      systemImage: "hammer", tint: MCTheme.Palette.warning)
             StatTile(label: "全部版本", value: "\(mojang.allVersions.count)",
                      systemImage: "square.stack.3d.up", tint: MCTheme.Palette.info)
-            StatTile(label: "已安装", value: "0",
+            StatTile(label: "已安装", value: "\(installedVersions.count)",
                      systemImage: "internaldrive", tint: MCTheme.Palette.accent)
         }
     }
@@ -172,7 +198,7 @@ struct QuickAction: View {
 }
 
 // MARK: - Launch Progress Sheet
-/// PCL 风格启动流程：检测 Java → 检查文件 → 启动进程
+/// PCL 风格启动流程：检测 Java → 解析 version.json → 构建参数 → 启动进程
 struct LaunchProgressSheet: View {
     let launchService: GameLaunchService
     let version: String
@@ -218,11 +244,11 @@ struct LaunchProgressSheet: View {
             }
         }
         .padding(MCTheme.Space.xxl)
-        .frame(width: 400, height: 240)
+        .frame(width: 420, height: 260)
         .background(MCTheme.Palette.surface)
         .onAppear {
             launchService.ensureDirectories()
-            launchService.launch(version: version, memoryGB: 4.0)
+            launchService.launch(version: version, username: "Player", memoryMB: 4096)
         }
     }
 }
