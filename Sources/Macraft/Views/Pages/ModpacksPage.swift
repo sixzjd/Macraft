@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 // MARK: - Modpack Model
 struct ModpackItem: Identifiable {
-    let id = UUID()
+    var id: String { name }
     var name: String
     var author: String
     var version: String
@@ -14,11 +14,50 @@ struct ModpackItem: Identifiable {
     var description: String
     var category: String
     var iconSymbol: String
+    var isInstalled: Bool = false
+}
+
+// MARK: - Modpack Scanner
+/// 扫描已安装的整合包（instances 目录中有 modpack.json 的）
+struct ModpackScanner {
+    static func scanInstalled() -> [ModpackItem] {
+        let fm = FileManager.default
+        let instancesPath = NSString("~/Library/Application Support/macraft/instances").expandingTildeInPath
+        guard let dirs = try? fm.contentsOfDirectory(atPath: instancesPath) else { return [] }
+        var results: [ModpackItem] = []
+        for dir in dirs.sorted() {
+            let jsonPath = "\(instancesPath)/\(dir)/modpack.json"
+            guard let data = fm.contents(atPath: jsonPath),
+                  let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            results.append(ModpackItem(
+                name: info["name"] as? String ?? dir,
+                author: "本地安装",
+                version: info["version"] as? String ?? "—",
+                mcVersion: info["mcVersion"] as? String ?? "—",
+                modCount: info["modCount"] as? Int ?? 0,
+                downloads: "—",
+                description: "已安装到实例「\(dir)」",
+                category: "本地",
+                iconSymbol: "shippingbox",
+                isInstalled: true
+            ))
+        }
+        return results
+    }
 }
 
 // MARK: - Modpacks Page
 struct ModpacksPage: View {
-    @State private var modpacks: [ModpackItem] = [
+    @State private var modpacks: [ModpackItem] = []
+    @State private var search = ""
+    @State private var installingPack: ModpackItem?
+    @State private var installProgress: Double = 0
+    @State private var showInstallProgress = false
+    @State private var showImportResult = false
+    @State private var importMessage = ""
+
+    /// 预设的在线整合包推荐
+    private static let onlinePacks: [ModpackItem] = [
         ModpackItem(name: "All the Mods 9", author: "ATM Team", version: "1.0.30",
                     mcVersion: "1.20.1", modCount: 387, downloads: "12.4M",
                     description: "大型综合科技魔法整合包", category: "综合",
@@ -36,12 +75,6 @@ struct ModpacksPage: View {
                     description: "RPG 地牢探索整合包", category: "冒险",
                     iconSymbol: "key"),
     ]
-    @State private var search = ""
-    @State private var installingPack: ModpackItem?
-    @State private var installProgress: Double = 0
-    @State private var showInstallProgress = false
-    @State private var showImportResult = false
-    @State private var importMessage = ""
 
     private var filtered: [ModpackItem] {
         guard !search.isEmpty else { return modpacks }
@@ -58,6 +91,7 @@ struct ModpacksPage: View {
                 modpackGrid
             }
         }
+        .onAppear { loadModpacks() }
         .alert("导入结果", isPresented: $showImportResult) {
             Button("确定", role: .cancel) { }
         } message: {
@@ -66,6 +100,13 @@ struct ModpacksPage: View {
         .sheet(isPresented: $showInstallProgress) {
             InstallProgressSheet(pack: installingPack, progress: installProgress)
         }
+    }
+
+    private func loadModpacks() {
+        // 已安装的整合包 + 在线推荐
+        let installed = ModpackScanner.scanInstalled()
+        let online = Self.onlinePacks.filter { o in !installed.contains { $0.name == o.name } }
+        modpacks = installed + online
     }
 
     private var toolbarRow: some View {
@@ -101,16 +142,32 @@ struct ModpacksPage: View {
         panel.canChooseDirectories = false
 
         if panel.runModal() == .OK, let url = panel.url {
-            let fileName = url.deletingPathExtension().lastPathComponent
-            let newPack = ModpackItem(
-                name: fileName, author: "本地导入", version: "—",
-                mcVersion: "—", modCount: 0, downloads: "—",
-                description: "从文件导入：\(url.lastPathComponent)",
-                category: "本地", iconSymbol: "shippingbox"
-            )
-            modpacks.insert(newPack, at: 0)
-            // 导入后自动开始安装（创建实例）
-            startInstall(newPack)
+            // 读取 manifest.json 获取整合包信息
+            var packName = url.deletingPathExtension().lastPathComponent
+            var mcVer = "—"
+            var modCnt = 0
+            // 用 unzip 命令读取 manifest
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+            process.arguments = ["-p", url.path, "manifest.json"]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            try? process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                packName = manifest["name"] as? String ?? packName
+                if let mc = manifest["minecraft"] as? [String: Any] {
+                    mcVer = mc["version"] as? String ?? "—"
+                }
+                if let files = manifest["files"] as? [[String: Any]] {
+                    modCnt = files.count
+                }
+            }
+
+            importMessage = "整合包「\(packName)」已识别。\nMC \(mcVer) | \(modCnt) 个模组\n\n请使用命令行安装：\npython3 scripts/install_modpack.py"
+            showImportResult = true
+            loadModpacks()
         }
     }
 

@@ -3,62 +3,116 @@ import AppKit
 
 // MARK: - Instance Model
 struct GameInstance: Identifiable {
-    let id = UUID()
+    var id: String { name }
     var name: String
     var version: String
     var loader: String       // Forge / Fabric / NeoForge / Vanilla
     var lastPlayed: String
     var iconSymbol: String
+    var modCount: Int
+    var directory: String    // 实例目录路径
+}
+
+// MARK: - Instance Scanner
+/// 扫描 ~/Library/Application Support/macraft/instances/ 目录获取真实实例
+struct InstanceScanner {
+    static var instancesDir: URL {
+        let path = NSString("~/Library/Application Support/macraft/instances").expandingTildeInPath
+        return URL(fileURLWithPath: path)
+    }
+
+    static func scan() -> [GameInstance] {
+        let fm = FileManager.default
+        guard let dirs = try? fm.contentsOfDirectory(atPath: instancesDir.path) else { return [] }
+        var results: [GameInstance] = []
+        for dir in dirs.sorted() {
+            let dirPath = instancesDir.appendingPathComponent(dir).path
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: dirPath, isDirectory: &isDir), isDir.boolValue else { continue }
+
+            // 读取 modpack.json（整合包安装的实例）
+            let modpackJson = dirPath + "/modpack.json"
+            var version = "未知"
+            var loader = "Vanilla"
+            var modCount = 0
+            if let data = fm.contents(atPath: modpackJson),
+               let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                version = info["mcVersion"] as? String ?? "未知"
+                if let forge = info["forge"] as? String, !forge.isEmpty {
+                    loader = "Forge"
+                }
+                modCount = info["modCount"] as? Int ?? 0
+            }
+
+            // 统计 mods 文件夹中的模组数
+            let modsPath = dirPath + "/mods"
+            if let mods = try? fm.contentsOfDirectory(atPath: modsPath) {
+                let jarCount = mods.filter { $0.hasSuffix(".jar") }.count
+                if jarCount > modCount { modCount = jarCount }
+                if modCount > 0 && loader == "Vanilla" { loader = "Forge" }
+            }
+
+            let icons = ["shippingbox", "cube", "leaf", "bolt.horizontal", "puzzlepiece", "star"]
+            results.append(GameInstance(
+                name: dir,
+                version: version,
+                loader: loader,
+                lastPlayed: "—",
+                iconSymbol: modCount > 0 ? "shippingbox" : "cube",
+                modCount: modCount,
+                directory: dirPath
+            ))
+        }
+        return results
+    }
 }
 
 // MARK: - Instances Page
 struct InstancesPage: View {
-    @State private var instances: [GameInstance] = [
-        GameInstance(name: "生存存档", version: "1.21.4", loader: "Fabric",
-                     lastPlayed: "2 小时前", iconSymbol: "leaf"),
-        GameInstance(name: "红石工坊", version: "1.20.4", loader: "Forge",
-                     lastPlayed: "昨天", iconSymbol: "bolt.horizontal"),
-        GameInstance(name: "纯净原版", version: "1.21.4", loader: "Vanilla",
-                     lastPlayed: "3 天前", iconSymbol: "cube"),
-        GameInstance(name: "模组整合", version: "1.20.1", loader: "NeoForge",
-                     lastPlayed: "上周", iconSymbol: "puzzlepiece"),
-    ]
+    @Environment(GameLaunchService.self) private var launchService
+    @State private var instances: [GameInstance] = []
     @State private var selectedInstance: GameInstance.ID?
     @State private var showCreateSheet = false
     @State private var launchingInstance: GameInstance?
-    @State private var showLaunchAlert = false
+    @State private var showLaunchSheet = false
     @State private var configInstance: GameInstance?
 
     var body: some View {
         PageContainer(title: "实例管理", subtitle: "每个实例拥有独立的版本、模组与配置，互不干扰") {
             VStack(spacing: MCTheme.Space.lg) {
                 toolbarRow
-                instanceGrid
+                if instances.isEmpty {
+                    Card {
+                        EmptyState(
+                            icon: "shippingbox",
+                            title: "暂无实例",
+                            message: "在「整合包」中导入整合包，或点击「新建实例」创建。"
+                        )
+                    }
+                } else {
+                    instanceGrid
+                }
             }
         }
+        .onAppear { instances = InstanceScanner.scan() }
         .sheet(isPresented: $showCreateSheet) {
             CreateInstanceSheet { name, version, loader in
-                let icons = ["cube", "leaf", "bolt.horizontal", "puzzlepiece", "star", "flame"]
-                instances.append(GameInstance(
-                    name: name, version: version, loader: loader,
-                    lastPlayed: "从未启动", iconSymbol: icons.randomElement()!
-                ))
+                // 创建实例目录
+                let dir = InstanceScanner.instancesDir.appendingPathComponent(name).path
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                try? FileManager.default.createDirectory(atPath: dir + "/mods", withIntermediateDirectories: true)
+                instances = InstanceScanner.scan()
                 showCreateSheet = false
             }
         }
         .sheet(item: $configInstance) { instance in
             InstanceConfigSheet(instance: instance) { updated in
-                if let idx = instances.firstIndex(where: { $0.id == updated.id }) {
-                    instances[idx] = updated
-                }
                 configInstance = nil
             }
         }
-        .alert("启动游戏", isPresented: $showLaunchAlert) {
-            Button("确定", role: .cancel) { }
-        } message: {
+        .sheet(isPresented: $showLaunchSheet) {
             if let inst = launchingInstance {
-                Text("正在启动 Minecraft \(inst.version)（\(inst.loader)）…\n实例：\(inst.name)")
+                InstanceLaunchSheet(launchService: launchService, instance: inst)
             }
         }
     }
@@ -69,6 +123,9 @@ struct InstancesPage: View {
                 .font(MCTheme.Font.caption(12))
                 .foregroundStyle(MCTheme.Palette.textTertiary)
             Spacer()
+            GhostButton(title: "刷新", systemImage: "arrow.clockwise") {
+                instances = InstanceScanner.scan()
+            }
             PrimaryButton(title: "新建实例", systemImage: "plus") {
                 showCreateSheet = true
             }
@@ -85,11 +142,13 @@ struct InstancesPage: View {
                     onTap: { selectedInstance = instance.id },
                     onLaunch: {
                         launchingInstance = instance
-                        showLaunchAlert = true
+                        showLaunchSheet = true
                     },
                     onConfig: { configInstance = instance },
                     onDelete: {
-                        instances.removeAll { $0.id == instance.id }
+                        // 删除实例目录
+                        try? FileManager.default.removeItem(atPath: instance.directory)
+                        instances = InstanceScanner.scan()
                         if selectedInstance == instance.id { selectedInstance = nil }
                     }
                 )
@@ -145,6 +204,9 @@ struct InstanceCard: View {
 
             HStack(spacing: MCTheme.Space.sm) {
                 PillBadge(text: instance.loader, color: loaderColor)
+                if instance.modCount > 0 {
+                    PillBadge(text: "\(instance.modCount) 模组", color: MCTheme.Palette.textSecondary)
+                }
                 Spacer()
                 Text(instance.lastPlayed)
                     .font(MCTheme.Font.caption(11))
@@ -328,5 +390,80 @@ struct InstanceConfigSheet: View {
         .padding(MCTheme.Space.xxl)
         .frame(width: 400)
         .background(MCTheme.Palette.surface)
+    }
+}
+
+// MARK: - Instance Launch Sheet
+/// 实例启动：使用 GameLaunchService 启动对应版本
+struct InstanceLaunchSheet: View {
+    let launchService: GameLaunchService
+    let instance: GameInstance
+    @Environment(\.dismiss) private var dismiss
+
+    /// 确定启动用的版本 ID（Forge 版本优先）
+    private var launchVersion: String {
+        let forgeId = "\(instance.version)-forge-\(forgeVersion)"
+        let forgeDir = NSString(string: "~/Library/Application Support/macraft/versions/\(forgeId)").expandingTildeInPath
+        if FileManager.default.fileExists(atPath: forgeDir + "/\(forgeId).json") {
+            return forgeId
+        }
+        return instance.version
+    }
+
+    private var forgeVersion: String {
+        // 从 modpack.json 读取 forge 版本
+        let modpackJson = instance.directory + "/modpack.json"
+        if let data = FileManager.default.contents(atPath: modpackJson),
+           let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let forge = info["forge"] as? String {
+            return forge
+        }
+        return ""
+    }
+
+    var body: some View {
+        VStack(spacing: MCTheme.Space.xl) {
+            switch launchService.state {
+            case .idle, .checkingJava, .checkingFiles, .launching:
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(MCTheme.Palette.accent)
+                Text(launchService.statusMessage.isEmpty ? "正在准备启动…" : launchService.statusMessage)
+                    .font(MCTheme.Font.body(13))
+                    .foregroundStyle(MCTheme.Palette.textSecondary)
+                    .multilineTextAlignment(.center)
+                GhostButton(title: "取消") { dismiss() }
+
+            case .running:
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(MCTheme.Palette.success)
+                Text(launchService.statusMessage)
+                    .font(MCTheme.Font.headline(15))
+                    .foregroundStyle(MCTheme.Palette.textPrimary)
+                PrimaryButton(title: "完成", systemImage: "checkmark") { dismiss() }
+
+            case .failed(let msg):
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 32))
+                    .foregroundStyle(MCTheme.Palette.warning)
+                Text("启动失败")
+                    .font(MCTheme.Font.headline(15))
+                    .foregroundStyle(MCTheme.Palette.textPrimary)
+                Text(msg)
+                    .font(MCTheme.Font.body(12))
+                    .foregroundStyle(MCTheme.Palette.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 320)
+                GhostButton(title: "关闭") { dismiss() }
+            }
+        }
+        .padding(MCTheme.Space.xxl)
+        .frame(width: 420, height: 260)
+        .background(MCTheme.Palette.surface)
+        .onAppear {
+            launchService.ensureDirectories()
+            launchService.launch(version: launchVersion, username: "Player", memoryMB: 4096)
+        }
     }
 }
