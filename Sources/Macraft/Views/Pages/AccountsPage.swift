@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WebKit
+import AuthenticationServices
 
 // MARK: - Account model
 struct GameAccount: Identifiable {
@@ -236,7 +237,7 @@ struct MicrosoftLoginSheet: View {
 
     private var idleView: some View {
         VStack(alignment: .leading, spacing: MCTheme.Space.lg) {
-            Text("点击开始后将在应用内打开微软登录页面。\n登录你的 Xbox Live / Minecraft 正版账户即可。")
+            Text("点击开始后将打开微软登录页面。\n请使用已购买 Minecraft Java 版的微软账户登录。")
                 .font(MCTheme.Font.body(13))
                 .foregroundStyle(MCTheme.Palette.textSecondary)
 
@@ -244,7 +245,7 @@ struct MicrosoftLoginSheet: View {
                 Spacer()
                 GhostButton(title: "取消") { dismiss() }
                 PrimaryButton(title: "开始登录", systemImage: "logo.windows") {
-                    step = .webView
+                    startSystemAuth()
                 }
             }
         }
@@ -253,7 +254,6 @@ struct MicrosoftLoginSheet: View {
     private var webViewLogin: some View {
         VStack(spacing: MCTheme.Space.md) {
             OAuthWebView(authUrl: Self.authUrl, redirectUri: Self.redirectUri) { code in
-                // 获取到授权码，开始兑换 token
                 step = .exchanging
                 statusText = "正在获取 Xbox Live 令牌…"
                 exchangeCodeForTokens(code: code)
@@ -329,15 +329,80 @@ struct MicrosoftLoginSheet: View {
             Text(errorMessage)
                 .font(MCTheme.Font.body(12))
                 .foregroundStyle(MCTheme.Palette.textSecondary)
-                .lineLimit(4)
+                .lineLimit(6)
             HStack {
                 Spacer()
                 GhostButton(title: "取消") { dismiss() }
                 PrimaryButton(title: "重试", systemImage: "arrow.clockwise") {
-                    step = .webView
+                    startSystemAuth()
                 }
             }
         }
+    }
+
+    // MARK: - 系统浏览器认证（ASWebAuthenticationSession）
+    /// 使用系统浏览器进行 OAuth 认证，避免 WKWebView 被微软拒绝
+    private func startSystemAuth() {
+        guard let authURL = URL(string: Self.authUrl) else {
+            errorMessage = "无法构建登录链接"
+            step = .error
+            return
+        }
+
+        let session = ASWebAuthenticationSession(
+            url: authURL,
+            callbackURLScheme: "https"  // 匹配 redirect_uri 的 scheme
+        ) { callbackURL, error in
+            if let error = error {
+                // 用户取消或出错
+                let nsErr = error as NSError
+                if nsErr.domain == ASWebAuthenticationSessionErrorDomain,
+                   nsErr.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+                    // 用户主动取消，不显示错误
+                    return
+                }
+                DispatchQueue.main.async {
+                    errorMessage = "登录窗口出错：\(error.localizedDescription)"
+                    step = .error
+                }
+                return
+            }
+
+            guard let url = callbackURL else {
+                DispatchQueue.main.async {
+                    errorMessage = "未收到登录回调"
+                    step = .error
+                }
+                return
+            }
+
+            // 提取 code 参数
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            guard let code = components?.queryItems?.first(where: { $0.name == "code" })?.value else {
+                // 检查是否有错误参数
+                let errDesc = components?.queryItems?.first(where: { $0.name == "error_description" })?.value
+                    ?? components?.queryItems?.first(where: { $0.name == "error" })?.value
+                    ?? "未获取到授权码"
+                DispatchQueue.main.async {
+                    errorMessage = errDesc
+                    step = .error
+                }
+                return
+            }
+
+            DispatchQueue.main.async {
+                step = .exchanging
+                statusText = "正在获取 Xbox Live 令牌…"
+            }
+            exchangeCodeForTokens(code: code)
+        }
+
+        // 不共享 Safari cookies（每次全新登录）
+        session.prefersEphemeralWebBrowserSession = true
+
+        // ASWebAuthenticationSession 需要 presentationContextProvider
+        session.presentationContextProvider = PresentationProvider()
+        session.start()
     }
 
     // MARK: - Token Exchange Chain (PCL2 流程)
@@ -380,9 +445,16 @@ struct MicrosoftLoginSheet: View {
         var req = URLRequest(url: URL(string: Self.tokenUrl)!)
         req.httpMethod = "POST"
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        let encodedRedirect = Self.redirectUri.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        let bodyStr = "client_id=\(Self.clientId)&code=\(code)&grant_type=authorization_code&redirect_uri=\(encodedRedirect)&scope=service::user.auth.xboxlive.com::MBI_SSL"
-        req.httpBody = bodyStr.data(using: .utf8)
+        // 使用 URLComponents 正确编码表单参数
+        var components = URLComponents()
+        components.queryItems = [
+            URLQueryItem(name: "client_id", value: Self.clientId),
+            URLQueryItem(name: "code", value: code),
+            URLQueryItem(name: "grant_type", value: "authorization_code"),
+            URLQueryItem(name: "redirect_uri", value: Self.redirectUri),
+            URLQueryItem(name: "scope", value: "service::user.auth.xboxlive.com::MBI_SSL")
+        ]
+        req.httpBody = components.percentEncodedQuery?.data(using: .utf8)
 
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -472,7 +544,7 @@ struct MicrosoftLoginSheet: View {
     }
 }
 
-// MARK: - OAuth WebView (内嵌浏览器登录)
+// MARK: - OAuth WebView (内嵌浏览器登录 - 备用方案)
 struct OAuthWebView: NSViewRepresentable {
     let authUrl: String
     let redirectUri: String
@@ -527,5 +599,12 @@ struct OAuthWebView: NSViewRepresentable {
             }
             decisionHandler(.allow)
         }
+    }
+}
+
+// MARK: - ASWebAuthenticationSession Presentation Provider
+class PresentationProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        return NSApp.mainWindow ?? NSApp.windows.first ?? NSWindow()
     }
 }
