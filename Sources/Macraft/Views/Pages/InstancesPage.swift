@@ -112,7 +112,7 @@ struct InstancesPage: View {
         }
         .sheet(isPresented: $showLaunchSheet) {
             if let inst = launchingInstance {
-                InstanceLaunchSheet(launchService: launchService, instance: inst)
+                InstanceLaunchSheet(instance: inst)
             }
         }
     }
@@ -396,13 +396,17 @@ struct InstanceConfigSheet: View {
 // MARK: - Instance Launch Sheet
 /// 实例启动：使用 GameLaunchService 启动对应版本
 struct InstanceLaunchSheet: View {
-    let launchService: GameLaunchService
+    @Environment(GameLaunchService.self) private var launchService
     let instance: GameInstance
     @Environment(\.dismiss) private var dismiss
+    @State private var launchError = ""
+    @State private var started = false
 
     /// 确定启动用的版本 ID（Forge 版本优先）
     private var launchVersion: String {
-        let forgeId = "\(instance.version)-forge-\(forgeVersion)"
+        let fv = forgeVersion
+        guard !fv.isEmpty else { return instance.version }
+        let forgeId = "\(instance.version)-forge-\(fv)"
         let forgeDir = NSString(string: "~/Library/Application Support/macraft/versions/\(forgeId)").expandingTildeInPath
         if FileManager.default.fileExists(atPath: forgeDir + "/\(forgeId).json") {
             return forgeId
@@ -411,7 +415,6 @@ struct InstanceLaunchSheet: View {
     }
 
     private var forgeVersion: String {
-        // 从 modpack.json 读取 forge 版本
         let modpackJson = instance.directory + "/modpack.json"
         if let data = FileManager.default.contents(atPath: modpackJson),
            let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -423,8 +426,20 @@ struct InstanceLaunchSheet: View {
 
     var body: some View {
         VStack(spacing: MCTheme.Space.xl) {
-            switch launchService.state {
-            case .idle, .checkingJava, .checkingFiles, .launching:
+            if !launchError.isEmpty {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 32))
+                    .foregroundStyle(MCTheme.Palette.warning)
+                Text("启动失败")
+                    .font(MCTheme.Font.headline(15))
+                    .foregroundStyle(MCTheme.Palette.textPrimary)
+                Text(launchError)
+                    .font(MCTheme.Font.body(12))
+                    .foregroundStyle(MCTheme.Palette.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 320)
+                GhostButton(title: "关闭") { dismiss() }
+            } else {
                 ProgressView()
                     .controlSize(.large)
                     .tint(MCTheme.Palette.accent)
@@ -432,38 +447,34 @@ struct InstanceLaunchSheet: View {
                     .font(MCTheme.Font.body(13))
                     .foregroundStyle(MCTheme.Palette.textSecondary)
                     .multilineTextAlignment(.center)
-                GhostButton(title: "取消") { dismiss() }
-
-            case .running:
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 36))
-                    .foregroundStyle(MCTheme.Palette.success)
-                Text(launchService.statusMessage)
-                    .font(MCTheme.Font.headline(15))
-                    .foregroundStyle(MCTheme.Palette.textPrimary)
-                PrimaryButton(title: "完成", systemImage: "checkmark") { dismiss() }
-
-            case .failed(let msg):
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 32))
-                    .foregroundStyle(MCTheme.Palette.warning)
-                Text("启动失败")
-                    .font(MCTheme.Font.headline(15))
-                    .foregroundStyle(MCTheme.Palette.textPrimary)
-                Text(msg)
-                    .font(MCTheme.Font.body(12))
-                    .foregroundStyle(MCTheme.Palette.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 320)
-                GhostButton(title: "关闭") { dismiss() }
+                if launchService.state == .running {
+                    PrimaryButton(title: "完成", systemImage: "checkmark") { dismiss() }
+                } else {
+                    GhostButton(title: "取消") { dismiss() }
+                }
             }
         }
         .padding(MCTheme.Space.xxl)
-        .frame(width: 420, height: 260)
+        .frame(width: 420, height: 280)
         .background(MCTheme.Palette.surface)
         .onAppear {
+            guard !started else { return }
+            started = true
             launchService.ensureDirectories()
-            launchService.launch(version: launchVersion, username: "Player", memoryMB: 4096)
+            let ver = launchVersion
+            // 检查版本文件是否存在
+            let verDir = NSString(string: "~/Library/Application Support/macraft/versions/\(ver)").expandingTildeInPath
+            let jsonPath = verDir + "/\(ver).json"
+            guard FileManager.default.fileExists(atPath: jsonPath) else {
+                launchError = "未找到版本 \(ver) 的配置文件。\n请先在「版本管理」中安装该版本。"
+                return
+            }
+            launchService.launch(version: ver, username: "Player", memoryMB: 4096)
+        }
+        .onChange(of: launchService.state) { _, newState in
+            if case .failed(let msg) = newState {
+                launchError = msg
+            }
         }
     }
 }
