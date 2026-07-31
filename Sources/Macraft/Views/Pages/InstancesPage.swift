@@ -469,7 +469,7 @@ struct InstanceLaunchSheet: View {
                 launchError = "未找到版本 \(ver) 的配置文件。\n请先在「版本管理」中安装该版本。"
                 return
             }
-            launchService.launch(version: ver, username: "Player", memoryMB: 4096)
+            launchService.launch(version: ver, username: "Player", memoryMB: 4096, instanceDir: instance.directory)
         }
         .onChange(of: launchService.state) { _, newState in
             if case .failed(let msg) = newState {

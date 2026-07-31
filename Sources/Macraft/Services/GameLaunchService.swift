@@ -91,30 +91,48 @@ final class GameLaunchService {
 
     // MARK: - PCL 风格启动流程
     @MainActor
-    func launch(version: String, username: String, memoryMB: Int) {
+    func launch(version: String, username: String, memoryMB: Int, instanceDir: String? = nil) {
+        let logFile = "/tmp/macraft_launch.log"
+        func log(_ msg: String) {
+            let line = "[\(Date())] \(msg)\n"
+            if let data = line.data(using: .utf8) {
+                if FileManager.default.fileExists(atPath: logFile) {
+                    if let handle = FileHandle(forWritingAtPath: logFile) {
+                        handle.seekToEndOfFile()
+                        handle.write(data)
+                        handle.closeFile()
+                    }
+                } else {
+                    FileManager.default.createFile(atPath: logFile, contents: data)
+                }
+            }
+        }
+        log("=== LAUNCH START ===")
+        log("version: \(version), username: \(username), memory: \(memoryMB), instanceDir: \(instanceDir ?? "nil")")
+
         state = .checkingJava
         statusMessage = "正在检测 Java 运行时…"
 
         guard let javaPath = findJava() else {
+            log("ERROR: Java not found")
             state = .failed("未找到 Java 运行时。\n请安装 Java 17+：brew install openjdk@21")
             return
         }
+        log("Java found: \(javaPath)")
 
         let javaVer = getJavaVersion(javaPath: javaPath)
         statusMessage = "Java \(javaVer) ✓ 正在解析版本配置…"
         state = .checkingFiles
 
+        // 游戏运行目录（实例目录 or 默认根目录）
+        let runDir = instanceDir ?? gameDirectory.path
+
         // 读取 version.json
         let versionDir = gameDirectory.appendingPathComponent("versions/\(version)")
         let jsonPath = versionDir.appendingPathComponent("\(version).json")
-        let jarPath = versionDir.appendingPathComponent("\(version).jar")
 
         guard FileManager.default.fileExists(atPath: jsonPath.path) else {
             state = .failed("未找到 \(version).json。\n请先在「版本管理」中安装该版本。")
-            return
-        }
-        guard FileManager.default.fileExists(atPath: jarPath.path) else {
-            state = .failed("未找到 \(version).jar 游戏主文件。\n请先在「版本管理」中安装该版本。")
             return
         }
 
@@ -128,28 +146,70 @@ final class GameLaunchService {
             return
         }
 
+        // 处理 inheritsFrom（Forge/Fabric 版本继承原版）
+        var mergedJSON = versionJSON
+        var clientJarPath: URL
+        var parentVersionId: String? = nil
+        if let parentId = versionJSON.inheritsFrom {
+            parentVersionId = parentId
+            let parentDir = gameDirectory.appendingPathComponent("versions/\(parentId)")
+            let parentJsonPath = parentDir.appendingPathComponent("\(parentId).json")
+            guard FileManager.default.fileExists(atPath: parentJsonPath.path) else {
+                state = .failed("未找到父版本 \(parentId).json。\n请先安装 Minecraft \(parentId)。")
+                return
+            }
+            do {
+                let parentData = try Data(contentsOf: parentJsonPath)
+                let parentJSON = try JSONDecoder().decode(VersionJSON.self, from: parentData)
+                // 合并：父版本 libraries + 子版本 libraries
+                mergedJSON = mergeVersions(parent: parentJSON, child: versionJSON)
+            } catch {
+                state = .failed("解析父版本失败：\(error.localizedDescription)")
+                return
+            }
+            // client.jar 用父版本的
+            clientJarPath = parentDir.appendingPathComponent("\(parentId).jar")
+        } else {
+            clientJarPath = versionDir.appendingPathComponent("\(version).jar")
+        }
+
+        guard FileManager.default.fileExists(atPath: clientJarPath.path) else {
+            state = .failed("未找到游戏主文件 \(clientJarPath.lastPathComponent)。\n请先在「版本管理」中安装。")
+            return
+        }
+
+        // 确保 natives 目录存在
+        let nativesDir = versionDir.appendingPathComponent("natives")
+        try? FileManager.default.createDirectory(at: nativesDir, withIntermediateDirectories: true)
+
         state = .launching
         statusMessage = "正在构建启动参数…"
 
         // 构建 classpath
-        let classpath = buildClasspath(versionJSON: versionJSON, jarPath: jarPath)
+        let classpath = buildClasspath(versionJSON: mergedJSON, jarPath: clientJarPath)
 
         // 构建启动参数
         let args = buildArguments(
-            versionJSON: versionJSON,
+            versionJSON: mergedJSON,
             version: version,
             username: username,
             memoryMB: memoryMB,
-            classpath: classpath
+            classpath: classpath,
+            gameDir: runDir,
+            parentVersion: parentVersionId
         )
 
         statusMessage = "正在启动 Minecraft \(version)…"
+        log("Launching process: \(javaPath)")
+        log("Args count: \(args.count)")
+        log("CWD: \(runDir)")
+        if args.count > 5 { log("First 5 args: \(args[0..<5])") }
 
         // 启动 Java 进程
         let process = Process()
         process.executableURL = URL(fileURLWithPath: javaPath)
         process.arguments = args
-        process.currentDirectoryURL = gameDirectory
+        process.currentDirectoryURL = URL(fileURLWithPath: runDir)
 
         // 输出日志
         let outPipe = Pipe()
@@ -160,6 +220,7 @@ final class GameLaunchService {
             try process.run()
             state = .running
             statusMessage = "Minecraft \(version) 已启动！"
+            log("SUCCESS: Process started, pid=\(process.processIdentifier)")
 
             // 监控进程退出
             DispatchQueue.global().async { [weak self] in
@@ -173,8 +234,44 @@ final class GameLaunchService {
                 }
             }
         } catch {
+            log("ERROR: Process launch failed: \(error)")
             state = .failed("启动失败：\(error.localizedDescription)")
         }
+    }
+
+    // MARK: - 合并父版本与子版本（Forge/Fabric 继承机制）
+    private func mergeVersions(parent: VersionJSON, child: VersionJSON) -> VersionJSON {
+        // 合并 libraries：父 + 子
+        let mergedLibraries = parent.libraries + child.libraries
+
+        // 合并 arguments：父的 game/jvm + 子的 game/jvm
+        var mergedGameArgs = parent.arguments?.game ?? []
+        var mergedJvmArgs = parent.arguments?.jvm ?? []
+        if let childGame = child.arguments?.game {
+            mergedGameArgs += childGame
+        }
+        if let childJvm = child.arguments?.jvm {
+            mergedJvmArgs += childJvm
+        }
+
+        let mergedArguments = VersionJSON.Arguments(
+            game: mergedGameArgs.isEmpty ? nil : mergedGameArgs,
+            jvm: mergedJvmArgs.isEmpty ? nil : mergedJvmArgs
+        )
+
+        return VersionJSON(
+            id: child.id,
+            type: child.type ?? parent.type,
+            mainClass: child.mainClass,  // 用子版本的 mainClass（Forge 的 BootstrapLauncher）
+            inheritsFrom: nil,
+            arguments: mergedArguments,
+            minecraftArguments: child.minecraftArguments ?? parent.minecraftArguments,
+            libraries: mergedLibraries,
+            downloads: child.downloads ?? parent.downloads,
+            assetIndex: child.assetIndex ?? parent.assetIndex,
+            assets: child.assets ?? parent.assets,
+            javaVersion: child.javaVersion ?? parent.javaVersion
+        )
     }
 
     // MARK: - 构建 Classpath（参考 PCL）
@@ -212,7 +309,9 @@ final class GameLaunchService {
         version: String,
         username: String,
         memoryMB: Int,
-        classpath: String
+        classpath: String,
+        gameDir: String,
+        parentVersion: String? = nil
     ) -> [String] {
         let nativesDir = gameDirectory.appendingPathComponent("versions/\(version)/natives")
         let assetsDir = gameDirectory.appendingPathComponent("assets")
@@ -229,15 +328,22 @@ final class GameLaunchService {
             for arg in jvmArgs {
                 switch arg {
                 case .simple(let s):
-                    args.append(replaceVariables(s, version: version, username: username,
+                    var replaced = replaceVariables(s, version: version, username: username,
                                                 nativesDir: nativesDir.path, assetsDir: assetsDir.path,
-                                                assetIndex: assetIndexId, classpath: classpath))
+                                                assetIndex: assetIndexId, classpath: classpath,
+                                                gameDir: gameDir)
+                    // Forge ignoreList 需要父版本名（client jar 是 1.20.1.jar 而不是 1.20.1-forge-47.3.22.jar）
+                    if let pv = parentVersion, replaced.contains("-DignoreList=") {
+                        replaced = replaced.replacingOccurrences(of: "\(version).jar", with: "\(pv).jar")
+                    }
+                    args.append(replaced)
                 case .complex(let ruled):
                     if evaluateRules(ruled.rules) {
                         for v in ruled.value.values {
                             args.append(replaceVariables(v, version: version, username: username,
                                                         nativesDir: nativesDir.path, assetsDir: assetsDir.path,
-                                                        assetIndex: assetIndexId, classpath: classpath))
+                                                        assetIndex: assetIndexId, classpath: classpath,
+                                                        gameDir: gameDir))
                         }
                     }
                 }
@@ -259,7 +365,8 @@ final class GameLaunchService {
                 case .simple(let s):
                     args.append(replaceVariables(s, version: version, username: username,
                                                 nativesDir: nativesDir.path, assetsDir: assetsDir.path,
-                                                assetIndex: assetIndexId, classpath: classpath))
+                                                assetIndex: assetIndexId, classpath: classpath,
+                                                gameDir: gameDir))
                 case .complex(let ruled):
                     // 跳过所有带 features 条件的参数（demo、quickPlay 等）
                     // 只保留 has_custom_resolution（我们主动提供分辨率）
@@ -274,7 +381,8 @@ final class GameLaunchService {
                         for v in ruled.value.values {
                             args.append(replaceVariables(v, version: version, username: username,
                                                         nativesDir: nativesDir.path, assetsDir: assetsDir.path,
-                                                        assetIndex: assetIndexId, classpath: classpath))
+                                                        assetIndex: assetIndexId, classpath: classpath,
+                                                        gameDir: gameDir))
                         }
                     }
                 }
@@ -285,7 +393,8 @@ final class GameLaunchService {
             for part in parts {
                 args.append(replaceVariables(part, version: version, username: username,
                                             nativesDir: nativesDir.path, assetsDir: assetsDir.path,
-                                            assetIndex: assetIndexId, classpath: classpath))
+                                            assetIndex: assetIndexId, classpath: classpath,
+                                            gameDir: gameDir))
             }
         }
 
@@ -300,13 +409,14 @@ final class GameLaunchService {
         nativesDir: String,
         assetsDir: String,
         assetIndex: String,
-        classpath: String
+        classpath: String,
+        gameDir: String
     ) -> String {
         var result = input
         let replacements: [String: String] = [
             "${auth_player_name}": username,
             "${version_name}": version,
-            "${game_directory}": gameDirectory.path,
+            "${game_directory}": gameDir,
             "${assets_root}": assetsDir,
             "${assets_index_name}": assetIndex,
             "${auth_uuid}": UUID().uuidString.replacingOccurrences(of: "-", with: ""),
