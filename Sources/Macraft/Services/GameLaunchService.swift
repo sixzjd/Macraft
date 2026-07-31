@@ -261,9 +261,14 @@ final class GameLaunchService {
                                                 nativesDir: nativesDir.path, assetsDir: assetsDir.path,
                                                 assetIndex: assetIndexId, classpath: classpath))
                 case .complex(let ruled):
-                    // 跳过需要特殊 feature 的参数（如 demo）
-                    if let features = ruled.rules.first?.features, features.keys.contains("is_demo_user") {
-                        continue
+                    // 跳过所有带 features 条件的参数（demo、quickPlay 等）
+                    // 只保留 has_custom_resolution（我们主动提供分辨率）
+                    let hasFeatures = ruled.rules.contains { $0.features != nil }
+                    if hasFeatures {
+                        let isResolution = ruled.rules.contains { rule in
+                            rule.features?["has_custom_resolution"] == true
+                        }
+                        if !isResolution { continue }
                     }
                     if evaluateRules(ruled.rules) {
                         for v in ruled.value.values {

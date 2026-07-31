@@ -267,9 +267,15 @@ struct MicrosoftLoginSheet: View {
                     .strokeBorder(MCTheme.Palette.border, lineWidth: 1)
             )
 
-            Text("在上方窗口中登录你的微软账户")
-                .font(MCTheme.Font.caption(12))
-                .foregroundStyle(MCTheme.Palette.textTertiary)
+            HStack {
+                Text("在上方窗口中登录你的微软账户")
+                    .font(MCTheme.Font.caption(12))
+                    .foregroundStyle(MCTheme.Palette.textTertiary)
+                Spacer()
+                GhostButton(title: "取消登录", systemImage: "xmark") {
+                    step = .idle
+                }
+            }
         }
     }
 
@@ -374,12 +380,17 @@ struct MicrosoftLoginSheet: View {
         var req = URLRequest(url: URL(string: Self.tokenUrl)!)
         req.httpMethod = "POST"
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        req.httpBody = "client_id=\(Self.clientId)&code=\(code)&grant_type=authorization_code&redirect_uri=\(Self.redirectUri.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")&scope=service::user.auth.xboxlive.com::MBI_SSL".data(using: .utf8)
+        let encodedRedirect = Self.redirectUri.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let bodyStr = "client_id=\(Self.clientId)&code=\(code)&grant_type=authorization_code&redirect_uri=\(encodedRedirect)&scope=service::user.auth.xboxlive.com::MBI_SSL"
+        req.httpBody = bodyStr.data(using: .utf8)
 
-        let (data, _) = try await URLSession.shared.data(for: req)
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = json["access_token"] as? String else {
-            let desc = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error_description"] as? String ?? "无法获取 Microsoft 令牌"
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let raw = String(data: data.prefix(200), encoding: .utf8) ?? "无响应"
+            throw NSError(domain: "OAuth", code: 1, userInfo: [NSLocalizedDescriptionKey: "Microsoft 服务返回了无法解析的响应：\(raw)"])
+        }
+        guard let token = json["access_token"] as? String else {
+            let desc = json["error_description"] as? String ?? json["error"] as? String ?? "无法获取 Microsoft 令牌"
             throw NSError(domain: "OAuth", code: 1, userInfo: [NSLocalizedDescriptionKey: desc])
         }
         return token
@@ -471,8 +482,22 @@ struct OAuthWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()  // 不保存登录状态
+        // 修复缩放：设置标准 viewport
+        let script = WKUserScript(source: """
+            var meta = document.querySelector('meta[name=viewport]');
+            if (!meta) {
+                meta = document.createElement('meta');
+                meta.name = 'viewport';
+                document.head.appendChild(meta);
+            }
+            meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+            document.body.style.zoom = '1.0';
+            """, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        config.userContentController.addUserScript(script)
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+        // 禁止页面缩放
+        webView.allowsMagnification = false
         if let url = URL(string: authUrl) {
             webView.load(URLRequest(url: url))
         }
