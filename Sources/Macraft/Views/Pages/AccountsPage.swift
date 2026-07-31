@@ -1,7 +1,5 @@
 import SwiftUI
 import AppKit
-import WebKit
-import AuthenticationServices
 
 // MARK: - Account model
 struct GameAccount: Identifiable {
@@ -189,16 +187,18 @@ struct AddOfflineAccountSheet: View {
 
 // MARK: - Microsoft Login Sheet
 /// 按照 PCL2 的授权代码流实现：login.live.com OAuth → Xbox Live → XSTS → Minecraft
+/// 使用系统浏览器登录（避免 WKWebView 被微软拦截），用户手动粘贴授权码
 struct MicrosoftLoginSheet: View {
     let onSuccess: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var step: LoginStep = .idle
     @State private var errorMessage = ""
     @State private var statusText = ""
+    @State private var codeInput = ""
 
     enum LoginStep {
         case idle
-        case webView      // 显示内嵌浏览器登录
+        case waitingCode  // 等待用户粘贴授权码
         case exchanging   // 正在兑换 token
         case done
         case error
@@ -219,8 +219,8 @@ struct MicrosoftLoginSheet: View {
             switch step {
             case .idle:
                 idleView
-            case .webView:
-                webViewLogin
+            case .waitingCode:
+                waitingCodeView
             case .exchanging:
                 exchangingView
             case .done:
@@ -230,14 +230,13 @@ struct MicrosoftLoginSheet: View {
             }
         }
         .padding(MCTheme.Space.xxl)
-        .frame(width: step == .webView ? 520 : 460,
-               height: step == .webView ? 560 : nil)
+        .frame(width: 480)
         .background(MCTheme.Palette.surface)
     }
 
     private var idleView: some View {
         VStack(alignment: .leading, spacing: MCTheme.Space.lg) {
-            Text("点击开始后将打开微软登录页面。\n请使用已购买 Minecraft Java 版的微软账户登录。")
+            Text("点击开始后将在系统浏览器中打开微软登录页面。\n请使用已购买 Minecraft Java 版的微软账户登录。")
                 .font(MCTheme.Font.body(13))
                 .foregroundStyle(MCTheme.Palette.textSecondary)
 
@@ -245,36 +244,55 @@ struct MicrosoftLoginSheet: View {
                 Spacer()
                 GhostButton(title: "取消") { dismiss() }
                 PrimaryButton(title: "开始登录", systemImage: "logo.windows") {
-                    startSystemAuth()
+                    openBrowserForLogin()
                 }
             }
         }
     }
 
-    private var webViewLogin: some View {
-        VStack(spacing: MCTheme.Space.md) {
-            OAuthWebView(authUrl: Self.authUrl, redirectUri: Self.redirectUri) { code in
-                step = .exchanging
-                statusText = "正在获取 Xbox Live 令牌…"
-                exchangeCodeForTokens(code: code)
-            } onCancel: {
-                step = .idle
+    private var waitingCodeView: some View {
+        VStack(alignment: .leading, spacing: MCTheme.Space.lg) {
+            // 步骤说明
+            VStack(alignment: .leading, spacing: MCTheme.Space.sm) {
+                Label("已在浏览器中打开登录页面", systemImage: "1.circle.fill")
+                    .font(MCTheme.Font.body(13))
+                    .foregroundStyle(MCTheme.Palette.success)
+                Label("在浏览器中登录你的微软账户", systemImage: "2.circle.fill")
+                    .font(MCTheme.Font.body(13))
+                    .foregroundStyle(MCTheme.Palette.textSecondary)
+                Label("登录成功后，复制浏览器地址栏中的链接粘贴到下方", systemImage: "3.circle.fill")
+                    .font(MCTheme.Font.body(13))
+                    .foregroundStyle(MCTheme.Palette.textSecondary)
             }
-            .frame(height: 420)
-            .clipShape(RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: MCTheme.Radius.md, style: .continuous)
-                    .strokeBorder(MCTheme.Palette.border, lineWidth: 1)
-            )
+
+            Text("登录成功后浏览器会跳转到一个以 oauth20_desktop.srf 开头的页面，\n请复制地址栏中的完整链接（或其中的 code= 后面的内容）粘贴到下方：")
+                .font(MCTheme.Font.caption(12))
+                .foregroundStyle(MCTheme.Palette.textTertiary)
+
+            // 粘贴区域
+            TextField("粘贴链接或授权码…", text: $codeInput)
+                .textFieldStyle(.plain)
+                .font(MCTheme.Font.body(13))
+                .padding(MCTheme.Space.md)
+                .background(
+                    RoundedRectangle(cornerRadius: MCTheme.Radius.sm, style: .continuous)
+                        .fill(MCTheme.Palette.backgroundDeep)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: MCTheme.Radius.sm, style: .continuous)
+                        .strokeBorder(MCTheme.Palette.borderStrong, lineWidth: 1)
+                )
 
             HStack {
-                Text("在上方窗口中登录你的微软账户")
-                    .font(MCTheme.Font.caption(12))
-                    .foregroundStyle(MCTheme.Palette.textTertiary)
-                Spacer()
-                GhostButton(title: "取消登录", systemImage: "xmark") {
-                    step = .idle
+                GhostButton(title: "重新打开浏览器", systemImage: "safari") {
+                    openBrowserForLogin()
                 }
+                Spacer()
+                GhostButton(title: "取消") { dismiss() }
+                PrimaryButton(title: "确认登录", systemImage: "arrow.right") {
+                    submitCode()
+                }
+                .disabled(codeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
     }
@@ -302,7 +320,7 @@ struct MicrosoftLoginSheet: View {
                     .font(MCTheme.Font.headline(15))
                     .foregroundStyle(MCTheme.Palette.textPrimary)
             }
-            Text("已成功获取 Minecraft 正版账户授权。")
+            Text("欢迎，\(playerName)！已成功获取 Minecraft 正版账户授权。")
                 .font(MCTheme.Font.body(13))
                 .foregroundStyle(MCTheme.Palette.textSecondary)
             HStack {
@@ -334,109 +352,113 @@ struct MicrosoftLoginSheet: View {
                 Spacer()
                 GhostButton(title: "取消") { dismiss() }
                 PrimaryButton(title: "重试", systemImage: "arrow.clockwise") {
-                    startSystemAuth()
+                    codeInput = ""
+                    openBrowserForLogin()
                 }
             }
         }
     }
 
-    // MARK: - 系统浏览器认证（ASWebAuthenticationSession）
-    /// 使用系统浏览器进行 OAuth 认证，避免 WKWebView 被微软拒绝
-    private func startSystemAuth() {
-        guard let authURL = URL(string: Self.authUrl) else {
-            errorMessage = "无法构建登录链接"
+    // MARK: - 打开系统浏览器登录
+    private func openBrowserForLogin() {
+        if let url = URL(string: Self.authUrl) {
+            NSWorkspace.shared.open(url)
+            step = .waitingCode
+            loginLog("Browser opened for login")
+        }
+    }
+
+    // MARK: - 从用户输入中提取授权码
+    private func submitCode() {
+        let input = codeInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        var code = input
+
+        // 如果用户粘贴了完整 URL，提取 code 参数
+        if input.contains("oauth20_desktop.srf") || input.contains("code=") {
+            if let url = URL(string: input),
+               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+               let codeParam = components.queryItems?.first(where: { $0.name == "code" })?.value {
+                code = codeParam
+            } else {
+                // 尝试用正则提取 code= 后面的内容
+                if let range = input.range(of: "code="),
+                   let endRange = input.range(of: "&", range: range.upperBound..<input.endIndex) {
+                    code = String(input[range.upperBound..<endRange.lowerBound])
+                } else if let range = input.range(of: "code=") {
+                    code = String(input[range.upperBound...])
+                }
+            }
+        }
+
+        guard !code.isEmpty else {
+            errorMessage = "未能从输入中提取到授权码，请确认粘贴了完整的链接"
             step = .error
             return
         }
 
-        let session = ASWebAuthenticationSession(
-            url: authURL,
-            callbackURLScheme: "https"  // 匹配 redirect_uri 的 scheme
-        ) { callbackURL, error in
-            if let error = error {
-                // 用户取消或出错
-                let nsErr = error as NSError
-                if nsErr.domain == ASWebAuthenticationSessionErrorDomain,
-                   nsErr.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
-                    // 用户主动取消，不显示错误
-                    return
-                }
-                DispatchQueue.main.async {
-                    errorMessage = "登录窗口出错：\(error.localizedDescription)"
-                    step = .error
-                }
-                return
-            }
-
-            guard let url = callbackURL else {
-                DispatchQueue.main.async {
-                    errorMessage = "未收到登录回调"
-                    step = .error
-                }
-                return
-            }
-
-            // 提取 code 参数
-            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            guard let code = components?.queryItems?.first(where: { $0.name == "code" })?.value else {
-                // 检查是否有错误参数
-                let errDesc = components?.queryItems?.first(where: { $0.name == "error_description" })?.value
-                    ?? components?.queryItems?.first(where: { $0.name == "error" })?.value
-                    ?? "未获取到授权码"
-                DispatchQueue.main.async {
-                    errorMessage = errDesc
-                    step = .error
-                }
-                return
-            }
-
-            DispatchQueue.main.async {
-                step = .exchanging
-                statusText = "正在获取 Xbox Live 令牌…"
-            }
-            exchangeCodeForTokens(code: code)
-        }
-
-        // 不共享 Safari cookies（每次全新登录）
-        session.prefersEphemeralWebBrowserSession = true
-
-        // ASWebAuthenticationSession 需要 presentationContextProvider
-        session.presentationContextProvider = PresentationProvider()
-        session.start()
+        loginLog("Code extracted: \(code.prefix(20))...")
+        step = .exchanging
+        statusText = "正在验证授权码…"
+        exchangeCodeForTokens(code: code)
     }
 
     // MARK: - Token Exchange Chain (PCL2 流程)
     private func exchangeCodeForTokens(code: String) {
         Task {
             do {
+                loginLog("=== LOGIN START ===")
+                loginLog("code: \(code.prefix(20))...")
+
                 // Step 1: 授权码 → Microsoft Token
                 let msToken = try await getMicrosoftToken(code: code)
+                loginLog("Step 1 OK: MS token obtained (\(msToken.prefix(20))...)")
                 await MainActor.run { statusText = "正在获取 Xbox Live 令牌…" }
 
                 // Step 2: Microsoft Token → Xbox Live Token
                 let (xblToken, userHash) = try await getXboxLiveToken(msToken: msToken)
+                loginLog("Step 2 OK: XBL token obtained, uhs=\(userHash)")
                 await MainActor.run { statusText = "正在获取 XSTS 令牌…" }
 
                 // Step 3: Xbox Live → XSTS Token
                 let xstsToken = try await getXstsToken(xblToken: xblToken)
+                loginLog("Step 3 OK: XSTS token obtained")
                 await MainActor.run { statusText = "正在获取 Minecraft 令牌…" }
 
                 // Step 4: XSTS → Minecraft Token
                 let mcToken = try await getMinecraftToken(userHash: userHash, xstsToken: xstsToken)
+                loginLog("Step 4 OK: MC token obtained")
                 await MainActor.run { statusText = "正在获取游戏档案…" }
 
                 // Step 5: 获取 Minecraft 档案（用户名）
                 let name = try await getMinecraftProfile(mcToken: mcToken)
+                loginLog("Step 5 OK: profile name = \(name)")
 
                 await MainActor.run {
                     playerName = name
                     step = .done
                 }
             } catch {
+                loginLog("ERROR: \(error.localizedDescription)")
                 await MainActor.run {
                     errorMessage = error.localizedDescription
                     step = .error
                 }
+            }
+        }
+    }
+
+    private func loginLog(_ msg: String) {
+        let line = "[\(Date())] \(msg)\n"
+        let logPath = "/tmp/macraft_login.log"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logPath) {
+                if let handle = FileHandle(forWritingAtPath: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                FileManager.default.createFile(atPath: logPath, contents: data)
             }
         }
     }
@@ -455,14 +477,20 @@ struct MicrosoftLoginSheet: View {
             URLQueryItem(name: "scope", value: "service::user.auth.xboxlive.com::MBI_SSL")
         ]
         req.httpBody = components.percentEncodedQuery?.data(using: .utf8)
+        loginLog("Token request body: \(components.percentEncodedQuery?.prefix(100) ?? "nil")...")
 
         let (data, response) = try await URLSession.shared.data(for: req)
+        let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
+        loginLog("Token response: HTTP \(httpStatus), \(data.count) bytes")
+
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            let raw = String(data: data.prefix(200), encoding: .utf8) ?? "无响应"
-            throw NSError(domain: "OAuth", code: 1, userInfo: [NSLocalizedDescriptionKey: "Microsoft 服务返回了无法解析的响应：\(raw)"])
+            let raw = String(data: data.prefix(300), encoding: .utf8) ?? "无响应"
+            loginLog("Token response NOT JSON: \(raw)")
+            throw NSError(domain: "OAuth", code: 1, userInfo: [NSLocalizedDescriptionKey: "Microsoft 服务返回了无法解析的响应 (HTTP \(httpStatus))：\(raw.prefix(100))"])
         }
         guard let token = json["access_token"] as? String else {
             let desc = json["error_description"] as? String ?? json["error"] as? String ?? "无法获取 Microsoft 令牌"
+            loginLog("Token error: \(desc)")
             throw NSError(domain: "OAuth", code: 1, userInfo: [NSLocalizedDescriptionKey: desc])
         }
         return token
@@ -544,67 +572,3 @@ struct MicrosoftLoginSheet: View {
     }
 }
 
-// MARK: - OAuth WebView (内嵌浏览器登录 - 备用方案)
-struct OAuthWebView: NSViewRepresentable {
-    let authUrl: String
-    let redirectUri: String
-    let onCode: (String) -> Void
-    let onCancel: () -> Void
-
-    func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()  // 不保存登录状态
-        // 修复缩放：设置标准 viewport
-        let script = WKUserScript(source: """
-            var meta = document.querySelector('meta[name=viewport]');
-            if (!meta) {
-                meta = document.createElement('meta');
-                meta.name = 'viewport';
-                document.head.appendChild(meta);
-            }
-            meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
-            document.body.style.zoom = '1.0';
-            """, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
-        config.userContentController.addUserScript(script)
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        // 禁止页面缩放
-        webView.allowsMagnification = false
-        if let url = URL(string: authUrl) {
-            webView.load(URLRequest(url: url))
-        }
-        return webView
-    }
-
-    func updateNSView(_ nsView: WKWebView, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    class Coordinator: NSObject, WKNavigationDelegate {
-        let parent: OAuthWebView
-        init(_ parent: OAuthWebView) { self.parent = parent }
-
-        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            if let url = navigationAction.request.url,
-               url.absoluteString.hasPrefix(parent.redirectUri) {
-                // 拦截重定向，提取 code 参数
-                let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-                if let code = components?.queryItems?.first(where: { $0.name == "code" })?.value {
-                    decisionHandler(.cancel)
-                    parent.onCode(code)
-                    return
-                }
-            }
-            decisionHandler(.allow)
-        }
-    }
-}
-
-// MARK: - ASWebAuthenticationSession Presentation Provider
-class PresentationProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        return NSApp.mainWindow ?? NSApp.windows.first ?? NSWindow()
-    }
-}
